@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202608190955
+// @version      202608191000
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -16,8 +16,8 @@
 // @require      https://raw.githubusercontent.com/SuperLeeK/web-javascript-lib/refs/heads/main/libs/useGist.js
 // @require      https://raw.githubusercontent.com/SuperLeeK/web-javascript-lib/refs/heads/main/libs/useKeyPress.js
 // @connect      api.github.com
-// @updateURL    https://cdn.jsdelivr.net/gh/SuperLeeK/tampermonkey-adblocker@main/adblocker.user.js?v=202608190955
-// @downloadURL  https://cdn.jsdelivr.net/gh/SuperLeeK/tampermonkey-adblocker@main/adblocker.user.js?v=202608190955
+// @updateURL    https://cdn.jsdelivr.net/gh/SuperLeeK/tampermonkey-adblocker@main/adblocker.user.js?v=202608191000
+// @downloadURL  https://cdn.jsdelivr.net/gh/SuperLeeK/tampermonkey-adblocker@main/adblocker.user.js?v=202608191000
 // @exclude      https://github.com/*
 // @exclude      https://vscode.dev/*
 // @exclude      https://*google*
@@ -25,19 +25,38 @@
 // ==/UserScript==
 
 function getGistConfig() {
-  const saved = GM_getValue("gist_config", null);
   const defaultConfig = {
     gistId: "",
     token: "",
     fileName: "ad_selector_list.json",
     blackListFileName: "ad_selector_blacklist.json"
   };
+
+  let saved = GM_getValue("gist_config", null);
+
+  // GM 스토리지에 유효한 정보가 없으면 localStorage 백업에서 복구 시도
+  if (!saved || !saved.gistId || !saved.token) {
+    try {
+      const localBackupStr = localStorage.getItem("adblock_gist_config");
+      if (localBackupStr) {
+        const localBackup = JSON.parse(localBackupStr);
+        if (localBackup && (localBackup.gistId || localBackup.token)) {
+          saved = { ...(saved || {}), ...localBackup };
+          GM_setValue("gist_config", saved);
+        }
+      }
+    } catch (e) {}
+  }
+
   if (!saved) return defaultConfig;
   return { ...defaultConfig, ...saved };
 }
 
 function setGistConfig(config) {
   GM_setValue("gist_config", config);
+  try {
+    localStorage.setItem("adblock_gist_config", JSON.stringify(config));
+  } catch (e) {}
 }
 
 function showGistConfigModal(onSaved) {
