@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202608191115
+// @version      202608191120
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -1408,40 +1408,83 @@ async function main() {
     const existingModal = document.getElementById("adblock-selector-modal");
     if (existingModal) existingModal.remove();
 
-    let highlightOverlay = document.getElementById("adblock-modal-highlight");
-    if (!highlightOverlay) {
-      highlightOverlay = document.createElement("div");
-      highlightOverlay.id = "adblock-modal-highlight";
-      highlightOverlay.style.cssText = `
+    let highlightContainer = document.getElementById("adblock-modal-highlight-container");
+    if (!highlightContainer) {
+      highlightContainer = document.createElement("div");
+      highlightContainer.id = "adblock-modal-highlight-container";
+      highlightContainer.style.cssText = `
         position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 0;
         pointer-events: none;
         z-index: 1000000;
-        border: 3px dashed #ff9800;
-        background-color: rgba(255, 152, 0, 0.25);
-        box-sizing: border-box;
-        transition: all 0.15s ease-out;
-        display: none;
       `;
-      document.body.appendChild(highlightOverlay);
+      document.body.appendChild(highlightContainer);
     }
 
     const elementStack = initialElement ? [initialElement] : [];
     let currentIndex = 0;
 
-    function updateOverlay(el) {
-      if (!el || !el.getBoundingClientRect || !document.body.contains(el)) {
-        highlightOverlay.style.display = "none";
-        return;
-      }
-      const rect = el.getBoundingClientRect();
+    function createHighlightBox(rect) {
       const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
       const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
 
-      highlightOverlay.style.width = rect.width + "px";
-      highlightOverlay.style.height = rect.height + "px";
-      highlightOverlay.style.top = (rect.top + scrollTop) + "px";
-      highlightOverlay.style.left = (rect.left + scrollLeft) + "px";
-      highlightOverlay.style.display = "block";
+      const box = document.createElement("div");
+      box.style.cssText = `
+        position: absolute;
+        pointer-events: none;
+        z-index: 1000000;
+        border: 2px dashed #ff9800;
+        background-color: rgba(255, 152, 0, 0.18);
+        box-sizing: border-box;
+        transition: all 0.15s ease-out;
+        width: ${rect.width}px;
+        height: ${rect.height}px;
+        top: ${rect.top + scrollTop}px;
+        left: ${rect.left + scrollLeft}px;
+      `;
+      return box;
+    }
+
+    function updateMultiOverlay(selectorStr, fallbackEl) {
+      if (!highlightContainer) return;
+      highlightContainer.innerHTML = "";
+
+      let targetElements = [];
+      const cleanSelector = selectorStr ? normalizeWildcardSelector(selectorStr.trim()) : "";
+
+      if (cleanSelector) {
+        try {
+          const found = Array.from(document.querySelectorAll(cleanSelector));
+          targetElements = found.filter(el => {
+            if (!el || !el.getBoundingClientRect) return false;
+            if (modalContainer && modalContainer.contains(el)) return false;
+            if (highlightContainer.contains(el)) return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          });
+        } catch (e) {}
+      }
+
+      if (targetElements.length === 0 && fallbackEl && fallbackEl.getBoundingClientRect) {
+        if (document.body.contains(fallbackEl)) {
+          targetElements = [fallbackEl];
+        }
+      }
+
+      const renderList = targetElements.slice(0, 100);
+      const frag = document.createDocumentFragment();
+
+      renderList.forEach(el => {
+        const rect = el.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          frag.appendChild(createHighlightBox(rect));
+        }
+      });
+
+      highlightContainer.appendChild(frag);
     }
 
     const modalContainer = document.createElement("div");
@@ -1731,6 +1774,8 @@ async function main() {
         const chosenVal = selectEl.value;
         if (chosenVal) {
           inputEl.value = chosenVal;
+          const curEl = elementStack[currentIndex];
+          updateMultiOverlay(chosenVal, curEl);
           updateLiveStylePreview();
           Toast.show(`선택자 적용: ${chosenVal}`);
         }
@@ -1745,7 +1790,7 @@ async function main() {
 
         renderTree(curEl);
         renderCandidateSelect(curEl);
-        updateOverlay(curEl);
+        updateMultiOverlay(inputEl.value, curEl);
 
         const canGoParent = curEl.parentElement && curEl.parentElement !== document.documentElement && curEl.parentElement !== document.body.parentNode;
         parentBtn.disabled = !canGoParent;
@@ -1877,17 +1922,8 @@ async function main() {
     }
 
     inputEl.oninput = () => {
-      try {
-        const normalized = normalizeWildcardSelector(inputEl.value);
-        const target = document.querySelector(normalized);
-        if (target) {
-          updateOverlay(target);
-          target.style.display = 'none';
-          setTimeout(() => target.style.display = '', 2000);
-        } else updateOverlay(null);
-      } catch (e) {
-        updateOverlay(null);
-      }
+      const curEl = elementStack[currentIndex];
+      updateMultiOverlay(inputEl.value, curEl);
       updateLiveStylePreview();
     };
 
@@ -1900,8 +1936,8 @@ async function main() {
     const closeModal = () => {
       onMouseUpResizer();
       modalContainer.remove();
-      if (highlightOverlay) {
-        highlightOverlay.remove();
+      if (highlightContainer) {
+        highlightContainer.remove();
       }
       if (livePreviewStyle) {
         livePreviewStyle.remove();
