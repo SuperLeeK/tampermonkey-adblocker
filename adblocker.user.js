@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      20260806080356
+// @version      202608190940
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -16,8 +16,8 @@
 // @require      https://raw.githubusercontent.com/SuperLeeK/web-javascript-lib/refs/heads/main/libs/useGist.js
 // @require      https://raw.githubusercontent.com/SuperLeeK/web-javascript-lib/refs/heads/main/libs/useKeyPress.js
 // @connect      api.github.com
-// @updateURL    https://github.com/SuperLeeK/tampermonkey/raw/refs/heads/main/sources/adblocker.user.js
-// @downloadURL  https://github.com/SuperLeeK/tampermonkey/raw/refs/heads/main/sources/adblocker.user.js
+// @updateURL    https://github.com/SuperLeeK/tampermonkey-adblocker/raw/refs/heads/main/sources/adblocker.user.js
+// @downloadURL  https://github.com/SuperLeeK/tampermonkey-adblocker/raw/refs/heads/main/sources/adblocker.user.js
 // @exclude      https://github.com/*
 // @exclude      https://vscode.dev/*
 // @exclude      https://*google*
