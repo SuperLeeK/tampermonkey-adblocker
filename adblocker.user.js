@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202608191006
+// @version      202608191115
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -25,19 +25,38 @@
 // ==/UserScript==
 
 function getGistConfig() {
-  const saved = GM_getValue("gist_config", null);
   const defaultConfig = {
     gistId: "",
     token: "",
     fileName: "ad_selector_list.json",
     blackListFileName: "ad_selector_blacklist.json"
   };
+
+  let saved = GM_getValue("gist_config", null);
+
+  // GM 스토리지에 유효한 정보가 없으면 localStorage 백업에서 복구 시도
+  if (!saved || !saved.gistId || !saved.token) {
+    try {
+      const localBackupStr = localStorage.getItem("adblock_gist_config");
+      if (localBackupStr) {
+        const localBackup = JSON.parse(localBackupStr);
+        if (localBackup && (localBackup.gistId || localBackup.token)) {
+          saved = { ...(saved || {}), ...localBackup };
+          GM_setValue("gist_config", saved);
+        }
+      }
+    } catch (e) {}
+  }
+
   if (!saved) return defaultConfig;
   return { ...defaultConfig, ...saved };
 }
 
 function setGistConfig(config) {
   GM_setValue("gist_config", config);
+  try {
+    localStorage.setItem("adblock_gist_config", JSON.stringify(config));
+  } catch (e) {}
 }
 
 function showGistConfigModal(onSaved) {
@@ -150,6 +169,15 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
     const responsiveStyle = document.createElement('style');
     responsiveStyle.id = 'adblock-responsive-style';
     responsiveStyle.textContent = `
+      #adblock-modal-info, #adblock-selector-modal, #adblock-modal-candidate-select {
+        scrollbar-width: none !important;
+        -ms-overflow-style: none !important;
+      }
+      #adblock-modal-info::-webkit-scrollbar, #adblock-selector-modal *::-webkit-scrollbar {
+        display: none !important;
+        width: 0 !important;
+        height: 0 !important;
+      }
       #adblock-ui-group {
         position: fixed;
         left: 20px;
@@ -241,48 +269,6 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
     }
   });
 
-  // 1. 선택자 그룹
-  const pickerCoverBtn = new Button({
-    text: "선택자(흰색덮기)",
-    variant: "success",
-    size: "small",
-    onClick: handlePickerCoverClick,
-  });
-
-  const pickerHideBtn = new Button({
-    text: "선택자(영역제거)",
-    variant: "success",
-    size: "small",
-    onClick: handlePickerHideClick,
-  });
-
-  const urlBlockBtn = new Button({
-    text: "광고링크추가",
-    variant: "warning",
-    size: "small",
-    onClick: handleUrlBlockClick,
-  });
-
-  const styleInjectBtn = new Button({
-    text: "스타일주입",
-    variant: "danger",
-    size: "small",
-    onClick: handleStyleInjectClick,
-  });
-  if (styleInjectBtn && styleInjectBtn.element) {
-    styleInjectBtn.element.style.backgroundColor = '#f38ba8';
-    styleInjectBtn.element.style.color = '#11111b';
-    styleInjectBtn.element.style.fontWeight = '600';
-    styleInjectBtn.element.style.borderColor = '#f38ba8';
-  }
-
-  const deleteListBtn = new Button({
-    text: "차단항목삭제",
-    variant: "danger",
-    size: "small",
-    onClick: handleDeleteListClick,
-  });
-
   const gistConfigBtn = new Button({
     text: "⚙️ Gist 설정",
     variant: "warning",
@@ -290,13 +276,6 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
     onClick: handleGistConfigClick || (() => showGistConfigModal()),
   });
 
-  pickerCoverBtn.appendTo(menuWrapper);
-  pickerHideBtn.appendTo(menuWrapper);
-  urlBlockBtn.appendTo(menuWrapper);
-  styleInjectBtn.appendTo(menuWrapper);
-  deleteListBtn.appendTo(menuWrapper);
-
-  // 2. 설정 그룹
   if (isBlacklisted) {
     const releaseBtn = new Button({
       text: "블랙리스트해제",
@@ -304,27 +283,66 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
       size: "small",
       onClick: handleBlacklistClick,
     });
-    
-    const hideReleaseBtn = new Button({
-      text: "하루동안미노출",
-      variant: "warning",
-      size: "small",
-      onClick: handleHideReleaseClick,
-    });
 
     releaseBtn.appendTo(menuWrapper);
-    hideReleaseBtn.appendTo(menuWrapper);
+    gistConfigBtn.appendTo(menuWrapper);
   } else {
+    const pickerCoverBtn = new Button({
+      text: "선택자(흰색덮기)",
+      variant: "success",
+      size: "small",
+      onClick: handlePickerCoverClick,
+    });
+
+    const pickerHideBtn = new Button({
+      text: "선택자(영역제거)",
+      variant: "success",
+      size: "small",
+      onClick: handlePickerHideClick,
+    });
+
+    const urlBlockBtn = new Button({
+      text: "광고링크추가",
+      variant: "warning",
+      size: "small",
+      onClick: handleUrlBlockClick,
+    });
+
+    const styleInjectBtn = new Button({
+      text: "스타일주입",
+      variant: "danger",
+      size: "small",
+      onClick: handleStyleInjectClick,
+    });
+    if (styleInjectBtn && styleInjectBtn.element) {
+      styleInjectBtn.element.style.backgroundColor = '#f38ba8';
+      styleInjectBtn.element.style.color = '#11111b';
+      styleInjectBtn.element.style.fontWeight = '600';
+      styleInjectBtn.element.style.borderColor = '#f38ba8';
+    }
+
+    const deleteListBtn = new Button({
+      text: "차단항목삭제",
+      variant: "danger",
+      size: "small",
+      onClick: handleDeleteListClick,
+    });
+
     const blacklistBtn = new Button({
       text: "블랙리스트추가",
       variant: "danger",
       size: "small",
       onClick: handleBlacklistClick,
     });
-    blacklistBtn.appendTo(menuWrapper);
-  }
 
-  gistConfigBtn.appendTo(menuWrapper);
+    pickerCoverBtn.appendTo(menuWrapper);
+    pickerHideBtn.appendTo(menuWrapper);
+    urlBlockBtn.appendTo(menuWrapper);
+    styleInjectBtn.appendTo(menuWrapper);
+    deleteListBtn.appendTo(menuWrapper);
+    blacklistBtn.appendTo(menuWrapper);
+    gistConfigBtn.appendTo(menuWrapper);
+  }
 
   groups.appendChild(menuWrapper);
   groups.appendChild(fabToggle);
@@ -540,6 +558,96 @@ function getUniqueSelector(el) {
   }
   
   return selector;
+}
+
+function generateCandidateSelectors(el) {
+  if (!el || el.nodeType !== 1) return [];
+
+  const candidates = [];
+
+  // 1. 스마트 기본 선택자
+  const primary = getUniqueSelector(el);
+  if (primary) candidates.push(primary);
+
+  const tagName = el.tagName.toLowerCase();
+
+  // 2. 속성 / 데이터(Data) / 커스텀 속성 검사
+  if (el.attributes) {
+    for (let i = 0; i < el.attributes.length; i++) {
+      const attr = el.attributes[i];
+      const name = attr.name.toLowerCase();
+      const val = attr.value.trim();
+
+      if (name === "style" || name === "class" || name.startsWith("on")) continue;
+
+      if (name.startsWith("data-") || name.startsWith("aria-") || ["role", "name", "type", "id", "src", "href"].includes(name) || name.includes("-")) {
+        if (val) {
+          if (val.length < 50) {
+            candidates.push(`[${name}="${CSS.escape(val)}"]`);
+            candidates.push(`${tagName}[${name}="${CSS.escape(val)}"]`);
+          } else {
+            candidates.push(`[${name}]`);
+          }
+        } else {
+          candidates.push(`[${name}]`);
+        }
+      }
+    }
+  }
+
+  // 3. ID 및 클래스 기반
+  if (el.id && typeof el.id === 'string' && el.id.trim()) {
+    const cleanId = el.id.trim();
+    candidates.push('#' + CSS.escape(cleanId));
+    candidates.push(`${tagName}#${CSS.escape(cleanId)}`);
+  }
+
+  if (el.className && typeof el.className === 'string') {
+    const classList = Array.from(el.classList).filter(c => c && c !== 'adblock-picker-overlay');
+    if (classList.length > 0) {
+      const fullClass = classList.map(c => CSS.escape(c.trim())).join('.');
+      candidates.push('.' + fullClass);
+      candidates.push(`${tagName}.${fullClass}`);
+
+      classList.forEach(c => {
+        if (c.trim().length >= 2) {
+          candidates.push('.' + CSS.escape(c.trim()));
+          candidates.push(`${tagName}.${CSS.escape(c.trim())}`);
+        }
+      });
+    }
+  }
+
+  // 4. 부모 계층과의 조합 (Parent Combination)
+  const parent = el.parentElement;
+  if (parent && parent.tagName && !['html', 'body'].includes(parent.tagName.toLowerCase())) {
+    const parentTag = parent.tagName.toLowerCase();
+    const siblings = Array.from(parent.children);
+    const index = siblings.indexOf(el) + 1;
+
+    let parentSel = '';
+    if (parent.id) {
+      parentSel = '#' + CSS.escape(parent.id.trim());
+    } else if (parent.classList && parent.classList.length > 0) {
+      const pClass = Array.from(parent.classList).filter(c => c && c !== 'adblock-picker-overlay')[0];
+      if (pClass) parentSel = `${parentTag}.${CSS.escape(pClass)}`;
+    } else {
+      parentSel = parentTag;
+    }
+
+    if (parentSel) {
+      if (el.classList && el.classList.length > 0) {
+        const firstClass = Array.from(el.classList).filter(c => c && c !== 'adblock-picker-overlay')[0];
+        if (firstClass) candidates.push(`${parentSel} > ${tagName}.${CSS.escape(firstClass)}`);
+      }
+      candidates.push(`${parentSel} > ${tagName}:nth-child(${index})`);
+    }
+  }
+
+  // 5. 단순 태그명
+  candidates.push(tagName);
+
+  return Array.from(new Set(candidates)).filter(s => s && s.trim().length > 0);
 }
 
 function extractAllResourceUrls(el) {
@@ -1371,6 +1479,7 @@ async function main() {
       <div style="padding: 12px 16px; background: rgba(255, 255, 255, 0.05); border-bottom: 1px solid rgba(255, 255, 255, 0.1); display: flex; justify-content: space-between; align-items: center; user-select: none;">
         <span style="font-weight: 600; font-size: 13px; color: #ff9800;">[${actionName}] 선택자 지정</span>
         <div style="display: flex; align-items: center; gap: 6px;">
+          <button id="adblock-modal-toggle-pos" style="background: none; border: none; color: #a1a1aa; font-size: 13px; cursor: pointer; padding: 2px 4px; line-height: 1;" title="상단/하단 위치 전환">⬆️</button>
           <button id="adblock-modal-maximize" style="background: none; border: none; color: #a1a1aa; font-size: 13px; cursor: pointer; padding: 2px 4px; line-height: 1;" title="높이 최대화 / 원래대로">🗖</button>
           <button id="adblock-modal-close" style="background: none; border: none; color: #a1a1aa; font-size: 18px; cursor: pointer; padding: 0 4px; line-height: 1;" title="닫기">&times;</button>
         </div>
@@ -1393,11 +1502,16 @@ async function main() {
             </button>
           </div>
         </div>
-        <div id="adblock-modal-info" style="margin-bottom: 12px; padding: 6px 8px; background: #09090b; border-radius: 6px; font-size: 11px; color: #a1a1aa; font-family: monospace; border: 1px solid #27272a; height: 100px; max-height: 100px; overflow-y: auto; box-sizing: border-box; transition: flex 0.15s ease;">
+        <div id="adblock-modal-info" style="margin-bottom: 12px; padding: 6px 8px; background: #09090b; border-radius: 6px; font-size: 11px; color: #a1a1aa; font-family: monospace; border: 1px solid #27272a; height: 100px; max-height: 100px; overflow-y: auto; box-sizing: border-box; transition: flex 0.15s ease; scrollbar-width: none; -ms-overflow-style: none;">
         </div>
         <div style="margin-bottom: 10px;">
           <label style="display: block; color: #a1a1aa; font-size: 12px; margin-bottom: 4px; font-weight: 500;">선택자 (Selector):</label>
           <input type="text" id="adblock-modal-input" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #4ade80; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none;" value="" />
+        </div>
+        <div style="margin-bottom: 10px;">
+          <label style="display: block; color: #a1a1aa; font-size: 11px; margin-bottom: 4px; font-weight: 500;">추천 선택자 목록 (선택 시 자동 적용):</label>
+          <select id="adblock-modal-candidate-select" style="width: 100%; box-sizing: border-box; padding: 7px 10px; background: #09090b; color: #4ade80; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none; cursor: pointer; scrollbar-width: none; -ms-overflow-style: none;">
+          </select>
         </div>
         ${isStyleType ? `
         <div style="margin-bottom: 14px;">
@@ -1425,12 +1539,27 @@ async function main() {
     const prevBtn = modalContainer.querySelector("#adblock-modal-prev-btn");
     const nextBtn = modalContainer.querySelector("#adblock-modal-next-btn");
     const maxBtn = modalContainer.querySelector("#adblock-modal-maximize");
+    const togglePosBtn = modalContainer.querySelector("#adblock-modal-toggle-pos");
     const resizerLeft = modalContainer.querySelector("#adblock-modal-resizer-left");
     const inputEl = modalContainer.querySelector("#adblock-modal-input");
     const infoEl = modalContainer.querySelector("#adblock-modal-info");
     const confirmBtn = modalContainer.querySelector("#adblock-modal-confirm");
     const cancelBtn = modalContainer.querySelector("#adblock-modal-cancel");
     const closeBtn = modalContainer.querySelector("#adblock-modal-close");
+
+    let isTopPos = false;
+    togglePosBtn.onclick = () => {
+      isTopPos = !isTopPos;
+      if (isTopPos) {
+        modalContainer.style.bottom = "auto";
+        modalContainer.style.top = "30px";
+        togglePosBtn.innerText = "⬇️";
+      } else {
+        modalContainer.style.top = "auto";
+        modalContainer.style.bottom = "24px";
+        togglePosBtn.innerText = "⬆️";
+      }
+    };
     const styleInput = isStyleType ? modalContainer.querySelector("#adblock-modal-style-input") : null;
 
     inputEl.value = initialSelector || '';
@@ -1564,6 +1693,50 @@ async function main() {
       }
     }
 
+    function renderCandidateSelect(targetElement) {
+      const selectEl = modalContainer.querySelector("#adblock-modal-candidate-select");
+      if (!selectEl) return;
+      selectEl.innerHTML = "";
+
+      if (!targetElement) {
+        const opt = document.createElement("option");
+        opt.textContent = "선택된 요소 없음";
+        opt.disabled = true;
+        selectEl.appendChild(opt);
+        return;
+      }
+
+      const candidateList = generateCandidateSelectors(targetElement);
+      if (candidateList.length === 0) {
+        const opt = document.createElement("option");
+        opt.textContent = "추천 선택자 없음";
+        opt.disabled = true;
+        selectEl.appendChild(opt);
+        return;
+      }
+
+      const curInputValue = inputEl.value.trim();
+
+      candidateList.forEach(sel => {
+        const opt = document.createElement("option");
+        opt.value = sel;
+        opt.textContent = sel;
+        if (sel === curInputValue) {
+          opt.selected = true;
+        }
+        selectEl.appendChild(opt);
+      });
+
+      selectEl.onchange = () => {
+        const chosenVal = selectEl.value;
+        if (chosenVal) {
+          inputEl.value = chosenVal;
+          updateLiveStylePreview();
+          Toast.show(`선택자 적용: ${chosenVal}`);
+        }
+      };
+    }
+
     function refreshUI() {
       const curEl = elementStack[currentIndex];
       if (curEl) {
@@ -1571,6 +1744,7 @@ async function main() {
         if (sel) inputEl.value = sel;
 
         renderTree(curEl);
+        renderCandidateSelect(curEl);
         updateOverlay(curEl);
 
         const canGoParent = curEl.parentElement && curEl.parentElement !== document.documentElement && curEl.parentElement !== document.body.parentNode;
