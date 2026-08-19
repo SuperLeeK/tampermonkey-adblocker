@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202608191000
+// @version      202608191004
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -16,8 +16,8 @@
 // @require      https://raw.githubusercontent.com/SuperLeeK/web-javascript-lib/refs/heads/main/libs/useGist.js
 // @require      https://raw.githubusercontent.com/SuperLeeK/web-javascript-lib/refs/heads/main/libs/useKeyPress.js
 // @connect      api.github.com
-// @updateURL    https://cdn.jsdelivr.net/gh/SuperLeeK/tampermonkey-adblocker@main/adblocker.user.js?v=202608191000
-// @downloadURL  https://cdn.jsdelivr.net/gh/SuperLeeK/tampermonkey-adblocker@main/adblocker.user.js?v=202608191000
+// @updateURL    https://github.com/SuperLeeK/tampermonkey-adblocker/raw/refs/heads/main/adblocker.user.js?v=202608191004
+// @downloadURL  https://github.com/SuperLeeK/tampermonkey-adblocker/raw/refs/heads/main/adblocker.user.js?v=202608191004
 // @exclude      https://github.com/*
 // @exclude      https://vscode.dev/*
 // @exclude      https://*google*
@@ -25,38 +25,19 @@
 // ==/UserScript==
 
 function getGistConfig() {
+  const saved = GM_getValue("gist_config", null);
   const defaultConfig = {
     gistId: "",
     token: "",
     fileName: "ad_selector_list.json",
     blackListFileName: "ad_selector_blacklist.json"
   };
-
-  let saved = GM_getValue("gist_config", null);
-
-  // GM 스토리지에 유효한 정보가 없으면 localStorage 백업에서 복구 시도
-  if (!saved || !saved.gistId || !saved.token) {
-    try {
-      const localBackupStr = localStorage.getItem("adblock_gist_config");
-      if (localBackupStr) {
-        const localBackup = JSON.parse(localBackupStr);
-        if (localBackup && (localBackup.gistId || localBackup.token)) {
-          saved = { ...(saved || {}), ...localBackup };
-          GM_setValue("gist_config", saved);
-        }
-      }
-    } catch (e) {}
-  }
-
   if (!saved) return defaultConfig;
   return { ...defaultConfig, ...saved };
 }
 
 function setGistConfig(config) {
   GM_setValue("gist_config", config);
-  try {
-    localStorage.setItem("adblock_gist_config", JSON.stringify(config));
-  } catch (e) {}
 }
 
 function showGistConfigModal(onSaved) {
@@ -1283,6 +1264,12 @@ async function main() {
     const activeRules = propsRulesArray || rulesArray;
     let matched = false;
 
+    console.log(`[AdBlocker Debug] checkAndApply 실행 - 현재창 Host: "${currentHost}" (URL: ${window.location.href})`);
+    console.log(`[AdBlocker Debug] 전체 등록된 규칙 개수: ${activeRules.length}`);
+    activeRules.forEach((r, idx) => {
+      console.log(`[AdBlocker Debug] 룰 #${idx + 1} - Host: "${r.host}" (덮기: ${(r.selectorList || []).length}, 제거: ${(r.displayNoneSelectorList || []).length})`);
+    });
+
     let combinedCover = [];
     let combinedHide = [];
     let combinedStyle = [];
@@ -1299,8 +1286,12 @@ async function main() {
     }
 
     if (matched) {
+      console.log(
+        `[AdBlocker Debug] 매칭 성공! 최종 적용 셀렉터 -> (덮기: ${combinedCover.length}, 제거: ${combinedHide.length}, 스타일: ${combinedStyle.length})`,
+      );
       applyAdblockRules(combinedCover, combinedHide, combinedStyle);
     } else if (adblockStyleElement) {
+      console.log(`[AdBlocker Debug] 매칭된 규칙 없음. 기존 주입 스타일 초기화.`);
       applyAdblockRules([], []);
     }
   }
