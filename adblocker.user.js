@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202608190940
+// @version      202608190955
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -16,8 +16,8 @@
 // @require      https://raw.githubusercontent.com/SuperLeeK/web-javascript-lib/refs/heads/main/libs/useGist.js
 // @require      https://raw.githubusercontent.com/SuperLeeK/web-javascript-lib/refs/heads/main/libs/useKeyPress.js
 // @connect      api.github.com
-// @updateURL    https://github.com/SuperLeeK/tampermonkey-adblocker/raw/refs/heads/main/sources/adblocker.user.js
-// @downloadURL  https://github.com/SuperLeeK/tampermonkey-adblocker/raw/refs/heads/main/sources/adblocker.user.js
+// @updateURL    https://cdn.jsdelivr.net/gh/SuperLeeK/tampermonkey-adblocker@main/adblocker.user.js?v=202608190955
+// @downloadURL  https://cdn.jsdelivr.net/gh/SuperLeeK/tampermonkey-adblocker@main/adblocker.user.js?v=202608190955
 // @exclude      https://github.com/*
 // @exclude      https://vscode.dev/*
 // @exclude      https://*google*
@@ -82,15 +82,22 @@ function showGistConfigModal(onSaved) {
       </div>
       <div>
         <label style="display: block; color: #a1a1aa; font-size: 12px; margin-bottom: 4px; font-weight: 500;">GitHub Token (필수):</label>
-        <input type="password" id="adblock-gist-token-input" placeholder="예: ghp_xxxxxxxxxxxxxxxxxxxx" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #ffab40; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none;" value="${currentConfig.token || ''}" />
+        <input type="text" id="adblock-gist-token-input" placeholder="예: ghp_xxxxxxxxxxxxxxxxxxxx" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #ffab40; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none;" value="${currentConfig.token || ''}" />
       </div>
       <div>
         <label style="display: block; color: #a1a1aa; font-size: 12px; margin-bottom: 4px; font-weight: 500;">선택자 파일명:</label>
         <input type="text" id="adblock-gist-file-input" placeholder="ad_selector_list.json" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none;" value="${currentConfig.fileName || 'ad_selector_list.json'}" />
       </div>
-      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px;">
-        <button id="adblock-gist-cancel" style="padding: 6px 14px; background: #27272a; color: #d4d4d8; border: 1px solid #3f3f46; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 500;">취소</button>
-        <button id="adblock-gist-save" style="padding: 6px 16px; background: #ff9800; color: #09090b; font-weight: 600; border: none; border-radius: 6px; font-size: 12px; cursor: pointer;">저장 및 동기화</button>
+      <div>
+        <label style="display: block; color: #a1a1aa; font-size: 12px; margin-bottom: 4px; font-weight: 500;">블랙리스트 파일명:</label>
+        <input type="text" id="adblock-gist-blacklist-file-input" placeholder="ad_selector_blacklist.json" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none;" value="${currentConfig.blackListFileName || 'ad_selector_blacklist.json'}" />
+      </div>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+        <button id="adblock-gist-open-url" style="padding: 6px 12px; background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 500;">🔗 Gist 바로가기</button>
+        <div style="display: flex; gap: 8px;">
+          <button id="adblock-gist-cancel" style="padding: 6px 14px; background: #27272a; color: #d4d4d8; border: 1px solid #3f3f46; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 500;">취소</button>
+          <button id="adblock-gist-save" style="padding: 6px 16px; background: #ff9800; color: #09090b; font-weight: 600; border: none; border-radius: 6px; font-size: 12px; cursor: pointer;">저장 및 동기화</button>
+        </div>
       </div>
     </div>
   `;
@@ -102,10 +109,20 @@ function showGistConfigModal(onSaved) {
   modalContainer.querySelector("#adblock-gist-close").onclick = close;
   modalContainer.querySelector("#adblock-gist-cancel").onclick = close;
 
+  modalContainer.querySelector("#adblock-gist-open-url").onclick = () => {
+    const gistId = modalContainer.querySelector("#adblock-gist-id-input").value.trim() || currentConfig.gistId;
+    if (!gistId) {
+      alert("Gist ID가 입력되지 않았습니다.");
+      return;
+    }
+    window.open(`https://gist.github.com/${gistId}`, "_blank");
+  };
+
   modalContainer.querySelector("#adblock-gist-save").onclick = () => {
     const gistId = modalContainer.querySelector("#adblock-gist-id-input").value.trim();
     const token = modalContainer.querySelector("#adblock-gist-token-input").value.trim();
     const fileName = modalContainer.querySelector("#adblock-gist-file-input").value.trim() || "ad_selector_list.json";
+    const blackListFileName = modalContainer.querySelector("#adblock-gist-blacklist-file-input").value.trim() || "ad_selector_blacklist.json";
 
     if (!gistId || !token) {
       alert("Gist ID와 GitHub Token은 필수 입력 항목입니다.");
@@ -116,7 +133,7 @@ function showGistConfigModal(onSaved) {
       gistId,
       token,
       fileName,
-      blackListFileName: currentConfig.blackListFileName || "ad_selector_blacklist.json"
+      blackListFileName
     });
 
     close();
@@ -278,7 +295,6 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
   urlBlockBtn.appendTo(menuWrapper);
   styleInjectBtn.appendTo(menuWrapper);
   deleteListBtn.appendTo(menuWrapper);
-  gistConfigBtn.appendTo(menuWrapper);
 
   // 2. 설정 그룹
   if (isBlacklisted) {
@@ -307,6 +323,8 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
     });
     blacklistBtn.appendTo(menuWrapper);
   }
+
+  gistConfigBtn.appendTo(menuWrapper);
 
   groups.appendChild(menuWrapper);
   groups.appendChild(fabToggle);
@@ -439,10 +457,7 @@ function isMatch(ruleStr, targetStr) {
   const cleanRule = ruleStr.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "").trim().toLowerCase();
   const cleanTarget = targetStr.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "").trim().toLowerCase();
 
-  console.log(`[AdBlocker Debug] isMatch 비교 시작 - 규칙 Host: "${cleanRule}", 현재 Target: "${cleanTarget}"`);
-
   if (cleanRule === cleanTarget) {
-    console.log(`[AdBlocker Debug] -> 단순 완전 일치 (MATCH!)`);
     return true;
   }
 
@@ -454,18 +469,13 @@ function isMatch(ruleStr, targetStr) {
     const regexStr = "(^|\\.)" + wildcardRegexStr + "$";
     try {
       const regex = new RegExp(regexStr);
-      const isMatched = regex.test(cleanTarget);
-      console.log(`[AdBlocker Debug] -> 와일드카드 정규식: /${regexStr}/, 매칭결과: ${isMatched}`);
-      return isMatched;
+      return regex.test(cleanTarget);
     } catch (e) {
-      console.error(`[AdBlocker Debug] 정규식 생성 실패:`, e);
       return false;
     }
   }
 
-  const isSubMatch = cleanTarget.endsWith("." + cleanRule) || cleanRule.endsWith("." + cleanTarget);
-  console.log(`[AdBlocker Debug] -> 서브도메인 매칭 결과: ${isSubMatch}`);
-  return isSubMatch;
+  return cleanTarget.endsWith("." + cleanRule) || cleanRule.endsWith("." + cleanTarget);
 }
 
 function getWildcardDomain(domainOrUrl) {
@@ -1254,12 +1264,6 @@ async function main() {
     const activeRules = propsRulesArray || rulesArray;
     let matched = false;
 
-    console.log(`[AdBlocker Debug] checkAndApply 실행 - 현재창 Host: "${currentHost}" (URL: ${window.location.href})`);
-    console.log(`[AdBlocker Debug] 전체 등록된 규칙 개수: ${activeRules.length}`);
-    activeRules.forEach((r, idx) => {
-      console.log(`[AdBlocker Debug] 룰 #${idx + 1} - Host: "${r.host}" (덮기: ${(r.selectorList || []).length}, 제거: ${(r.displayNoneSelectorList || []).length})`);
-    });
-
     let combinedCover = [];
     let combinedHide = [];
     let combinedStyle = [];
@@ -1276,12 +1280,8 @@ async function main() {
     }
 
     if (matched) {
-      console.log(
-        `[AdBlocker Debug] 매칭 성공! 최종 적용 셀렉터 -> (덮기: ${combinedCover.length}, 제거: ${combinedHide.length}, 스타일: ${combinedStyle.length})`,
-      );
       applyAdblockRules(combinedCover, combinedHide, combinedStyle);
     } else if (adblockStyleElement) {
-      console.log(`[AdBlocker Debug] 매칭된 규칙 없음. 기존 주입 스타일 초기화.`);
       applyAdblockRules([], []);
     }
   }
