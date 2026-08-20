@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202608200905
+// @version      202608200910
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -370,7 +370,15 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
   groups.appendChild(menuWrapper);
   groups.appendChild(fabToggle);
   
-  document.body.appendChild(groups);
+  if (document.body) {
+    document.body.appendChild(groups);
+  } else {
+    document.addEventListener("DOMContentLoaded", () => {
+      if (document.body && !document.getElementById("adblock-ui-group")) {
+        document.body.appendChild(groups);
+      }
+    });
+  }
 }
 
 function clipboardEventListener({ handleClick }) {
@@ -2721,21 +2729,21 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
   setupFloatingButton();
 
   function ensureFloatingButtonExists() {
+    if (!document.body) return;
     let uiGroup = document.getElementById("adblock-ui-group");
-    const rootEl = document.documentElement || document.body;
 
-    if (!uiGroup || !rootEl.contains(uiGroup)) {
+    if (!uiGroup || !document.body.contains(uiGroup)) {
       if (uiGroup) {
-        rootEl.appendChild(uiGroup);
+        document.body.appendChild(uiGroup);
       } else {
         setupFloatingButton();
         uiGroup = document.getElementById("adblock-ui-group");
       }
     }
 
-    if (uiGroup && rootEl) {
-      if (rootEl.lastElementChild !== uiGroup) {
-        rootEl.appendChild(uiGroup);
+    if (uiGroup && document.body) {
+      if (document.body.lastElementChild !== uiGroup) {
+        document.body.appendChild(uiGroup);
       }
       uiGroup.style.zIndex = "2147483647";
       uiGroup.style.display = "flex";
@@ -2748,12 +2756,21 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
   setTimeout(ensureFloatingButtonExists, 10000);
   setInterval(ensureFloatingButtonExists, 5000);
 
-  try {
-    const observer = new MutationObserver(() => {
-      ensureFloatingButtonExists();
-    });
-    observer.observe(document.documentElement || document.body, { childList: true, subtree: false });
-  } catch (e) {}
+  const initObserver = () => {
+    if (!document.body) return;
+    try {
+      const observer = new MutationObserver(() => {
+        ensureFloatingButtonExists();
+      });
+      observer.observe(document.body, { childList: true, subtree: false });
+    } catch (e) {}
+  };
+
+  if (document.body) {
+    initObserver();
+  } else {
+    document.addEventListener("DOMContentLoaded", initObserver);
+  }
 
   clipboardEventListener({ handleClick: handleManualClick });
   useKeysPress(["Shift", "+"], handleManualClick);
