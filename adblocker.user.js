@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202608191120
+// @version      202608200905
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -121,7 +121,7 @@ function showGistConfigModal(onSaved) {
     </div>
   `;
 
-  document.body.appendChild(modalContainer);
+  (document.body || document.documentElement).appendChild(modalContainer);
 
   const close = () => modalContainer.remove();
 
@@ -179,14 +179,20 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
         height: 0 !important;
       }
       #adblock-ui-group {
-        position: fixed;
-        left: 20px;
-        bottom: 20px;
-        z-index: 999999;
-        display: flex;
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 8px;
+        position: fixed !important;
+        left: 20px !important;
+        bottom: 20px !important;
+        z-index: 2147483647 !important;
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: flex-start !important;
+        gap: 8px !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        pointer-events: auto !important;
+        transform: none !important;
+        filter: none !important;
+        clip: auto !important;
       }
       .adblock-fab-toggle {
         width: 42px;
@@ -269,6 +275,22 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
     }
   });
 
+  const scriptUpdateBtn = new Button({
+    text: "🔄 스크립트 업데이트",
+    variant: "warning",
+    size: "small",
+    onClick: () => {
+      const updateUrl = "https://github.com/SuperLeeK/tampermonkey-adblocker/raw/refs/heads/main/adblocker.user.js";
+      window.location.href = updateUrl;
+    },
+  });
+  if (scriptUpdateBtn && scriptUpdateBtn.element) {
+    scriptUpdateBtn.element.style.backgroundColor = '#3b82f6';
+    scriptUpdateBtn.element.style.color = '#ffffff';
+    scriptUpdateBtn.element.style.fontWeight = '600';
+    scriptUpdateBtn.element.style.borderColor = '#60a5fa';
+  }
+
   const gistConfigBtn = new Button({
     text: "⚙️ Gist 설정",
     variant: "warning",
@@ -285,6 +307,7 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
     });
 
     releaseBtn.appendTo(menuWrapper);
+    scriptUpdateBtn.appendTo(menuWrapper);
     gistConfigBtn.appendTo(menuWrapper);
   } else {
     const pickerCoverBtn = new Button({
@@ -2680,16 +2703,57 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
     });
   }
 
-  makeButtonGroups({
-    handleManualClick,
-    handlePickerCoverClick,
-    handlePickerHideClick,
-    handleStyleInjectClick,
-    handleBlacklistClick,
-    handleUrlBlockClick,
-    handleDeleteListClick,
-    handleGistConfigClick: () => showGistConfigModal()
-  });
+  const setupFloatingButton = () => {
+    const isBlacklisted = isDomainBlacklisted(window.location.hostname);
+    makeButtonGroups({
+      handleManualClick,
+      handlePickerCoverClick,
+      handlePickerHideClick,
+      handleStyleInjectClick,
+      handleBlacklistClick,
+      handleUrlBlockClick,
+      handleDeleteListClick,
+      handleGistConfigClick: () => showGistConfigModal(),
+      isBlacklisted
+    });
+  };
+
+  setupFloatingButton();
+
+  function ensureFloatingButtonExists() {
+    let uiGroup = document.getElementById("adblock-ui-group");
+    const rootEl = document.documentElement || document.body;
+
+    if (!uiGroup || !rootEl.contains(uiGroup)) {
+      if (uiGroup) {
+        rootEl.appendChild(uiGroup);
+      } else {
+        setupFloatingButton();
+        uiGroup = document.getElementById("adblock-ui-group");
+      }
+    }
+
+    if (uiGroup && rootEl) {
+      if (rootEl.lastElementChild !== uiGroup) {
+        rootEl.appendChild(uiGroup);
+      }
+      uiGroup.style.zIndex = "2147483647";
+      uiGroup.style.display = "flex";
+      uiGroup.style.visibility = "visible";
+    }
+  }
+
+  setTimeout(ensureFloatingButtonExists, 3000);
+  setTimeout(ensureFloatingButtonExists, 5000);
+  setTimeout(ensureFloatingButtonExists, 10000);
+  setInterval(ensureFloatingButtonExists, 5000);
+
+  try {
+    const observer = new MutationObserver(() => {
+      ensureFloatingButtonExists();
+    });
+    observer.observe(document.documentElement || document.body, { childList: true, subtree: false });
+  } catch (e) {}
 
   clipboardEventListener({ handleClick: handleManualClick });
   useKeysPress(["Shift", "+"], handleManualClick);
