@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202608200910
+// @version      202608200915
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -9,6 +9,7 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_webRequest
+// @grant        GM_registerMenuCommand
 // @grant        unsafeWindow
 // @run-at       document-start
 // @require      https://raw.githubusercontent.com/SuperLeeK/web-javascript-lib/refs/heads/main/widgets/button.js
@@ -2770,6 +2771,18 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
     initObserver();
   } else {
     document.addEventListener("DOMContentLoaded", initObserver);
+  }
+
+  if (typeof GM_registerMenuCommand !== "undefined") {
+    GM_registerMenuCommand("🎈 플로팅버튼 띄우기", () => {
+      ensureFloatingButtonExists();
+      Toast.show("플로팅 버튼을 화면에 띄웠습니다.");
+    });
+
+    GM_registerMenuCommand("🔄 수동 업데이트", () => {
+      const updateUrl = "https://github.com/SuperLeeK/tampermonkey-adblocker/raw/refs/heads/main/adblocker.user.js";
+      window.location.href = updateUrl;
+    });
   }
 
   clipboardEventListener({ handleClick: handleManualClick });
