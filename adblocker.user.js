@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202608200915
+// @version      202608200916
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -2712,14 +2712,25 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
     });
   }
 
+  function checkIsBlacklisted() {
+    try {
+      const cached = GM_getValue("cachedBlackList", []);
+      const host = window.location.hostname;
+      const origin = window.location.origin;
+      return cached.some(item => item === host || item === origin || (typeof isMatch === 'function' && isMatch(item.replace(/^https?:\/\//, ""), host)));
+    } catch (e) {
+      return false;
+    }
+  }
+
   const setupFloatingButton = () => {
-    const isBlacklisted = isDomainBlacklisted(window.location.hostname);
+    const isBlacklisted = checkIsBlacklisted();
     makeButtonGroups({
       handleManualClick,
       handlePickerCoverClick,
       handlePickerHideClick,
       handleStyleInjectClick,
-      handleBlacklistClick,
+      handleBlacklistClick: isBlacklisted ? handleBlacklistReleaseClick : handleBlacklistClick,
       handleUrlBlockClick,
       handleDeleteListClick,
       handleGistConfigClick: () => showGistConfigModal(),
