@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202608200921
+// @version      202608200936
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -204,7 +204,30 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
     const responsiveStyle = document.createElement('style');
     responsiveStyle.id = 'adblock-responsive-style';
     responsiveStyle.textContent = `
-      #adblock-modal-info, #adblock-selector-modal, #adblock-modal-candidate-select {
+      #adblock-modal-info, #adblock-selector-modal {
+        scrollbar-width: none !important;
+        -ms-overflow-style: none !important;
+      }
+      #adblock-modal-candidate-select {
+        height: 38px !important;
+        line-height: 1.4 !important;
+        padding: 6px 30px 6px 10px !important;
+        -webkit-appearance: none !important;
+        -moz-appearance: none !important;
+        appearance: none !important;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%234ade80' stroke-width='2.5'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E") !important;
+        background-repeat: no-repeat !important;
+        background-position: right 10px center !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+        scrollbar-width: none !important;
+        -ms-overflow-style: none !important;
+      }
+      #adblock-modal-info::-webkit-scrollbar, #adblock-selector-modal *::-webkit-scrollbar {
+        display: none !important;
+        width: 0 !important;
+        height: 0 !important;
+      }nfo, #adblock-selector-modal, #adblock-modal-candidate-select {
         scrollbar-width: none !important;
         -ms-overflow-style: none !important;
       }
@@ -646,11 +669,17 @@ function generateCandidateSelectors(el) {
 
       if (name === "style" || name === "class" || name.startsWith("on")) continue;
 
-      if (name.startsWith("data-") || name.startsWith("aria-") || ["role", "name", "type", "id", "src", "href"].includes(name) || name.includes("-")) {
+      if (name.startsWith("data-") || name.startsWith("aria-") || ["role", "name", "type", "id", "src", "href", "x-show"].includes(name) || name.includes("-")) {
         if (val) {
           if (val.length < 50) {
             candidates.push(`[${name}="${CSS.escape(val)}"]`);
             candidates.push(`${tagName}[${name}="${CSS.escape(val)}"]`);
+
+            // 속성값에 숫자/대괄호가 포함된 경우 부분 일치 와일드카드 추천 (예: x-show="popupVisible[3]" -> [x-show*="popupVisible"])
+            const valMatch = val.match(/^([a-zA-Z0-9_-]+?)[\[\d_-]+/);
+            if (valMatch && valMatch[1] && valMatch[1].length >= 3) {
+              candidates.push(`[${name}*="${valMatch[1]}"]`);
+            }
           } else {
             candidates.push(`[${name}]`);
           }
@@ -676,9 +705,16 @@ function generateCandidateSelectors(el) {
       candidates.push(`${tagName}.${fullClass}`);
 
       classList.forEach(c => {
-        if (c.trim().length >= 2) {
-          candidates.push('.' + CSS.escape(c.trim()));
-          candidates.push(`${tagName}.${CSS.escape(c.trim())}`);
+        const clean = c.trim();
+        if (clean.length >= 2) {
+          candidates.push('.' + CSS.escape(clean));
+          candidates.push(`${tagName}.${CSS.escape(clean)}`);
+
+          // 클래스명 뒤에 숫자가 붙은 경우 부분 일치 와일드카드 추천 (예: .popup-pc1 -> [class*="popup-pc"])
+          const classPrefixMatch = clean.match(/^([a-zA-Z0-9_-]+?)\d+$/);
+          if (classPrefixMatch && classPrefixMatch[1] && classPrefixMatch[1].length >= 3) {
+            candidates.push(`[class*="${classPrefixMatch[1]}"]`);
+          }
         }
       });
     }
@@ -1589,7 +1625,9 @@ async function main() {
         <span style="font-weight: 600; font-size: 13px; color: #ff9800;">[${actionName}] 선택자 지정</span>
         <div style="display: flex; align-items: center; gap: 6px;">
           <button id="adblock-modal-toggle-pos" style="background: none; border: none; color: #a1a1aa; font-size: 13px; cursor: pointer; padding: 2px 4px; line-height: 1;" title="상단/하단 위치 전환">⬆️</button>
-          <button id="adblock-modal-maximize" style="background: none; border: none; color: #a1a1aa; font-size: 13px; cursor: pointer; padding: 2px 4px; line-height: 1;" title="높이 최대화 / 원래대로">🗖</button>
+          <button id="adblock-modal-maximize" style="background: none; border: none; color: #a1a1aa; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; justify-content: center; line-height: 1;" title="높이 최대화 / 원래대로">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+          </button>
           <button id="adblock-modal-close" style="background: none; border: none; color: #a1a1aa; font-size: 18px; cursor: pointer; padding: 0 4px; line-height: 1;" title="닫기">&times;</button>
         </div>
       </div>
@@ -1619,7 +1657,7 @@ async function main() {
         </div>
         <div style="margin-bottom: 10px;">
           <label style="display: block; color: #a1a1aa; font-size: 11px; margin-bottom: 4px; font-weight: 500;">추천 선택자 목록 (선택 시 자동 적용):</label>
-          <select id="adblock-modal-candidate-select" style="width: 100%; box-sizing: border-box; padding: 7px 10px; background: #09090b; color: #4ade80; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none; cursor: pointer; scrollbar-width: none; -ms-overflow-style: none;">
+          <select id="adblock-modal-candidate-select">
           </select>
         </div>
         ${isStyleType ? `
@@ -1629,9 +1667,9 @@ async function main() {
         </div>
         ` : ''}
         <div style="margin-top: 10px; margin-bottom: 14px;">
-          <label style="display: inline-flex; align-items: center; gap: 6px; color: #a1a1aa; font-size: 12px; cursor: pointer; user-select: none; line-height: 1;" title="도메인의 숫자 부분을 * 와일드카드로 저장하여 넘버링 도메인에 동시 적용">
-            <input type="checkbox" id="adblock-modal-domain-wildcard" style="accent-color: #ff9800; cursor: pointer; flex-shrink: 0; margin: 0; vertical-align: middle;" ${hasNumericDomain(window.location.hostname) ? 'checked' : ''} />
-            <span style="white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; line-height: 1.2;">와일드카드 도메인 적용 <span style="color: #ffab40; font-family: monospace; font-size: 11px;">(${getWildcardDomain(window.location.hostname)})</span></span>
+          <label style="display: flex; align-items: center; gap: 8px; color: #a1a1aa; font-size: 12px; cursor: pointer; user-select: none; line-height: 1.3;" title="도메인의 숫자 부분을 * 와일드카드로 저장하여 넘버링 도메인에 동시 적용">
+            <input type="checkbox" id="adblock-modal-domain-wildcard" style="width: 16px; height: 16px; min-width: 16px; min-height: 16px; accent-color: #ff9800; cursor: pointer; flex-shrink: 0; margin: 0;" ${hasNumericDomain(window.location.hostname) ? 'checked' : ''} />
+            <span style="display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; line-height: 1.3;">와일드카드 도메인 적용 <span style="color: #ffab40; font-family: monospace; font-size: 11px;">(${getWildcardDomain(window.location.hostname)})</span></span>
           </label>
         </div>
         <div style="display: flex; justify-content: flex-end; gap: 8px;">
@@ -1938,7 +1976,7 @@ async function main() {
     maxBtn.onclick = () => {
       isMaximized = !isMaximized;
       if (isMaximized) {
-        maxBtn.textContent = '🗗';
+        maxBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="9" width="12" height="12" rx="1.5"/><path d="M9 9V4.5A1.5 1.5 0 0 1 10.5 3H19.5A1.5 1.5 0 0 1 21 4.5V13.5A1.5 1.5 0 0 1 19.5 15H15"/></svg>';
         modalContainer.style.top = '24px';
         modalContainer.style.bottom = '24px';
         modalContainer.style.height = 'calc(100vh - 48px)';
@@ -1949,7 +1987,7 @@ async function main() {
         infoEl.style.maxHeight = 'none';
         infoEl.style.flex = '1';
       } else {
-        maxBtn.textContent = '🗖';
+        maxBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>';
         modalContainer.style.top = 'auto';
         modalContainer.style.bottom = '24px';
         modalContainer.style.height = 'auto';
@@ -2841,7 +2879,6 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
   }
 
   clipboardEventListener({ handleClick: handleManualClick });
-  useKeysPress(["Shift", "+"], handleManualClick);
 
   const supportedPages = rulesArray.some((v) =>
     isMatch(v.host.replace(/^https?:\/\//, ""), window.location.hostname),
