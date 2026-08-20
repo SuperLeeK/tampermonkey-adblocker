@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202608200920
+// @version      202608200921
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -28,20 +28,26 @@
 (function registerTampermonkeyMenuCommands() {
   if (typeof GM_registerMenuCommand !== "undefined") {
     try {
-      GM_registerMenuCommand("🎈 플로팅버튼 띄우기", () => {
-        if (typeof window.__adblock_ensureFloatingButton === "function") {
-          window.__adblock_ensureFloatingButton();
+      GM_registerMenuCommand("🎈 플로팅버튼 토글", () => {
+        if (typeof window.__adblock_toggleFloatingButton === "function") {
+          window.__adblock_toggleFloatingButton();
         } else {
           const uiGroup = document.getElementById("adblock-ui-group");
           if (uiGroup) {
-            uiGroup.style.display = "flex";
-            uiGroup.style.visibility = "visible";
-            uiGroup.style.zIndex = "2147483647";
-            if (document.body) document.body.appendChild(uiGroup);
+            const isVisible = uiGroup.style.display !== "none" && uiGroup.style.visibility !== "hidden";
+            if (isVisible) {
+              window.__adblock_isFloatingHidden = true;
+              uiGroup.style.display = "none";
+              if (typeof Toast !== "undefined" && Toast.show) Toast.show("플로팅 버튼을 숨겼습니다.");
+            } else {
+              window.__adblock_isFloatingHidden = false;
+              uiGroup.style.display = "flex";
+              uiGroup.style.visibility = "visible";
+              uiGroup.style.zIndex = "2147483647";
+              if (document.body) document.body.appendChild(uiGroup);
+              if (typeof Toast !== "undefined" && Toast.show) Toast.show("플로팅 버튼을 띄웠습니다.");
+            }
           }
-        }
-        if (typeof Toast !== "undefined" && Toast.show) {
-          Toast.show("플로팅 버튼을 화면에 띄웠습니다.");
         }
       });
 
@@ -2769,7 +2775,7 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
   setupFloatingButton();
 
   function ensureFloatingButtonExists() {
-    if (!document.body) return;
+    if (!document.body || window.__adblock_isFloatingHidden) return;
     let uiGroup = document.getElementById("adblock-ui-group");
 
     if (!uiGroup || !document.body.contains(uiGroup)) {
@@ -2792,6 +2798,26 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
   }
 
   window.__adblock_ensureFloatingButton = ensureFloatingButtonExists;
+  window.__adblock_toggleFloatingButton = function() {
+    let uiGroup = document.getElementById("adblock-ui-group");
+    const isCurrentlyVisible = uiGroup && uiGroup.style.display !== "none" && uiGroup.style.visibility !== "hidden";
+
+    if (isCurrentlyVisible) {
+      window.__adblock_isFloatingHidden = true;
+      if (uiGroup) {
+        uiGroup.style.display = "none";
+      }
+      if (typeof Toast !== "undefined" && Toast.show) {
+        Toast.show("플로팅 버튼을 숨겼습니다.");
+      }
+    } else {
+      window.__adblock_isFloatingHidden = false;
+      ensureFloatingButtonExists();
+      if (typeof Toast !== "undefined" && Toast.show) {
+        Toast.show("플로팅 버튼을 띄웠습니다.");
+      }
+    }
+  };
 
   setTimeout(ensureFloatingButtonExists, 3000);
   setTimeout(ensureFloatingButtonExists, 5000);
