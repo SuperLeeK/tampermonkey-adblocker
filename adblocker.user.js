@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202608200916
+// @version      202608200920
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -24,6 +24,34 @@
 // @exclude      https://*google*
 // @exclude      https://*github*
 // ==/UserScript==
+
+(function registerTampermonkeyMenuCommands() {
+  if (typeof GM_registerMenuCommand !== "undefined") {
+    try {
+      GM_registerMenuCommand("🎈 플로팅버튼 띄우기", () => {
+        if (typeof window.__adblock_ensureFloatingButton === "function") {
+          window.__adblock_ensureFloatingButton();
+        } else {
+          const uiGroup = document.getElementById("adblock-ui-group");
+          if (uiGroup) {
+            uiGroup.style.display = "flex";
+            uiGroup.style.visibility = "visible";
+            uiGroup.style.zIndex = "2147483647";
+            if (document.body) document.body.appendChild(uiGroup);
+          }
+        }
+        if (typeof Toast !== "undefined" && Toast.show) {
+          Toast.show("플로팅 버튼을 화면에 띄웠습니다.");
+        }
+      });
+
+      GM_registerMenuCommand("🔄 수동 업데이트", () => {
+        const updateUrl = "https://github.com/SuperLeeK/tampermonkey-adblocker/raw/refs/heads/main/adblocker.user.js";
+        window.location.href = updateUrl;
+      });
+    } catch (e) {}
+  }
+})();
 
 function getGistConfig() {
   const defaultConfig = {
@@ -2763,6 +2791,8 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
     }
   }
 
+  window.__adblock_ensureFloatingButton = ensureFloatingButtonExists;
+
   setTimeout(ensureFloatingButtonExists, 3000);
   setTimeout(ensureFloatingButtonExists, 5000);
   setTimeout(ensureFloatingButtonExists, 10000);
@@ -2782,18 +2812,6 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
     initObserver();
   } else {
     document.addEventListener("DOMContentLoaded", initObserver);
-  }
-
-  if (typeof GM_registerMenuCommand !== "undefined") {
-    GM_registerMenuCommand("🎈 플로팅버튼 띄우기", () => {
-      ensureFloatingButtonExists();
-      Toast.show("플로팅 버튼을 화면에 띄웠습니다.");
-    });
-
-    GM_registerMenuCommand("🔄 수동 업데이트", () => {
-      const updateUrl = "https://github.com/SuperLeeK/tampermonkey-adblocker/raw/refs/heads/main/adblocker.user.js";
-      window.location.href = updateUrl;
-    });
   }
 
   clipboardEventListener({ handleClick: handleManualClick });
