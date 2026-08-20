@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202608200936
+// @version      202608200942
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -209,9 +209,19 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
         -ms-overflow-style: none !important;
       }
       #adblock-modal-candidate-select {
+        width: 100% !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
         height: 38px !important;
         line-height: 1.4 !important;
         padding: 6px 30px 6px 10px !important;
+        background-color: #09090b !important;
+        color: #4ade80 !important;
+        border: 1px solid #3f3f46 !important;
+        border-radius: 6px !important;
+        font-family: monospace !important;
+        font-size: 12px !important;
+        outline: none !important;
         -webkit-appearance: none !important;
         -moz-appearance: none !important;
         appearance: none !important;
@@ -220,16 +230,14 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
         background-position: right 10px center !important;
         text-overflow: ellipsis !important;
         white-space: nowrap !important;
+        overflow: hidden !important;
+        display: block !important;
         scrollbar-width: none !important;
         -ms-overflow-style: none !important;
       }
-      #adblock-modal-info::-webkit-scrollbar, #adblock-selector-modal *::-webkit-scrollbar {
-        display: none !important;
-        width: 0 !important;
-        height: 0 !important;
-      }nfo, #adblock-selector-modal, #adblock-modal-candidate-select {
-        scrollbar-width: none !important;
-        -ms-overflow-style: none !important;
+      #adblock-modal-candidate-select option {
+        background-color: #09090b !important;
+        color: #4ade80 !important;
       }
       #adblock-modal-info::-webkit-scrollbar, #adblock-selector-modal *::-webkit-scrollbar {
         display: none !important;
@@ -1655,9 +1663,9 @@ async function main() {
           <label style="display: block; color: #a1a1aa; font-size: 12px; margin-bottom: 4px; font-weight: 500;">선택자 (Selector):</label>
           <input type="text" id="adblock-modal-input" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #4ade80; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none;" value="" />
         </div>
-        <div style="margin-bottom: 10px;">
+        <div style="margin-bottom: 10px; width: 100%; max-width: 100%; box-sizing: border-box; overflow: hidden;">
           <label style="display: block; color: #a1a1aa; font-size: 11px; margin-bottom: 4px; font-weight: 500;">추천 선택자 목록 (선택 시 자동 적용):</label>
-          <select id="adblock-modal-candidate-select">
+          <select id="adblock-modal-candidate-select" style="width: 100%; max-width: 100%; box-sizing: border-box; height: 38px; padding: 6px 30px 6px 10px; background-color: #09090b; color: #4ade80; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none; cursor: pointer; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; display: block;">
           </select>
         </div>
         ${isStyleType ? `
@@ -1867,7 +1875,8 @@ async function main() {
       candidateList.forEach(sel => {
         const opt = document.createElement("option");
         opt.value = sel;
-        opt.textContent = sel;
+        opt.textContent = sel.length > 70 ? sel.substring(0, 67) + "..." : sel;
+        opt.style.cssText = "background-color: #09090b; color: #4ade80;";
         if (sel === curInputValue) {
           opt.selected = true;
         }
