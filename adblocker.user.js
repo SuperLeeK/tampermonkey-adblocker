@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202608210910
+// @version      202608211100
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -25,7 +25,7 @@
 // @exclude      https://*github*
 // ==/UserScript==
 
-(function registerTampermonkeyMenuCommands() {
+function registerTampermonkeyMenuCommands(isBlacklisted = false) {
   if (typeof GM_registerMenuCommand !== "undefined") {
     try {
       GM_registerMenuCommand("🎈 플로팅버튼 토글", () => {
@@ -51,13 +51,298 @@
         }
       });
 
+      GM_registerMenuCommand("🎧 이벤트 리스너 추적 결과", () => {
+        if (typeof showCapturedEventsModal === "function") {
+          showCapturedEventsModal();
+        }
+      });
+
+      GM_registerMenuCommand("⚙️ Gist 설정", () => {
+        if (typeof window.__adblock_openGistConfig === "function") {
+          window.__adblock_openGistConfig();
+        } else if (typeof showGistConfigModal === "function") {
+          showGistConfigModal();
+        }
+      });
+
+      GM_registerMenuCommand("🗑️ 설정 제거창", () => {
+        if (typeof window.__adblock_openDeleteList === "function") {
+          window.__adblock_openDeleteList();
+        } else {
+          if (typeof Toast !== "undefined" && Toast.show) Toast.show("설정 제거창을 열 수 없습니다.");
+        }
+      });
+
+      const blacklistLabel = isBlacklisted ? "🟢 블랙리스트 해제" : "⛔ 블랙리스트 추가";
+      GM_registerMenuCommand(blacklistLabel, () => {
+        if (typeof window.__adblock_toggleBlacklist === "function") {
+          window.__adblock_toggleBlacklist();
+        } else {
+          if (typeof Toast !== "undefined" && Toast.show) Toast.show("블랙리스트 액션을 실행할 수 없습니다.");
+        }
+      });
+
       GM_registerMenuCommand("🔄 수동 업데이트", () => {
         const updateUrl = "https://github.com/SuperLeeK/tampermonkey-adblocker/raw/refs/heads/main/adblocker.user.js";
         window.location.href = updateUrl;
       });
     } catch (e) {}
   }
+}
+
+registerTampermonkeyMenuCommands();
+
+(function initEventListenerTracker() {
+  if (window.__adblockTrackerInitialized) return;
+  window.__adblockTrackerInitialized = true;
+  window.__adblockCapturedEvents = [];
+
+  try {
+    const targetProto = typeof EventTarget !== 'undefined' ? EventTarget.prototype : Element.prototype;
+    const origAddEventListener = targetProto.addEventListener;
+
+    targetProto.addEventListener = function(type, listener, options) {
+      if (typeof listener === 'function') {
+        try {
+          const fnName = listener.name || '(익명 함수)';
+          const fnCode = listener.toString();
+          window.__adblockCapturedEvents.push({
+            target: this,
+            type: type,
+            fnName: fnName,
+            fnCode: fnCode,
+            timestamp: Date.now()
+          });
+          if (window.__adblockCapturedEvents.length > 1500) {
+            window.__adblockCapturedEvents.shift();
+          }
+        } catch (e) {}
+      }
+      return origAddEventListener.call(this, type, listener, options);
+    };
+  } catch (e) {}
 })();
+
+function showCapturedEventsModal() {
+  const existing = document.getElementById("adblock-captured-events-modal");
+  if (existing) existing.remove();
+
+  const events = window.__adblockCapturedEvents || [];
+
+  const modalContainer = document.createElement("div");
+  modalContainer.id = "adblock-captured-events-modal";
+  modalContainer.style.cssText = `
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 1000005;
+    width: 650px;
+    max-width: calc(100vw - 32px);
+    max-height: 80vh;
+    background: #18181b;
+    color: #f4f4f5;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-sizing: border-box;
+  `;
+
+  modalContainer.innerHTML = `
+    <div style="padding: 12px 16px; background: rgba(255, 255, 255, 0.05); border-bottom: 1px solid rgba(255, 255, 255, 0.1); display: flex; justify-content: space-between; align-items: center; user-select: none;">
+      <span style="font-weight: 600; font-size: 13px; color: #a855f7;">🎧 이벤트 리스너 추적 목록 (<span id="adblock-events-count">${events.length}</span>개)</span>
+      <button id="adblock-events-close" style="background: none; border: none; color: #a1a1aa; font-size: 18px; cursor: pointer; padding: 0 4px; line-height: 1;" title="닫기">&times;</button>
+    </div>
+    <div style="padding: 12px 16px; display: flex; gap: 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); background: #09090b; align-items: center; flex-wrap: wrap;">
+      <input type="text" id="adblock-events-search" placeholder="이벤트 타입, 함수명, DOM 태그 검색..." style="flex: 1; min-width: 180px; box-sizing: border-box; padding: 6px 10px; background: #18181b; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-size: 12px; outline: none;" />
+      <button id="adblock-events-console-log" style="padding: 6px 10px; background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); border-radius: 6px; font-size: 11px; cursor: pointer; font-weight: 500;">📋 콘솔 출력</button>
+      <button id="adblock-events-clear" style="padding: 6px 10px; background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 6px; font-size: 11px; cursor: pointer; font-weight: 500;">🗑️ 기록 삭제</button>
+    </div>
+    <div id="adblock-events-list" style="flex: 1; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; max-height: calc(80vh - 110px);">
+    </div>
+  `;
+
+  document.body.appendChild(modalContainer);
+
+  const getTargetDescription = (target) => {
+    if (!target) return "(Unknown Target)";
+    if (target === window) return "window";
+    if (target === document) return "document";
+    if (target.tagName) {
+      let desc = target.tagName.toLowerCase();
+      if (target.id) desc += `#${target.id}`;
+      if (target.className && typeof target.className === "string") {
+        const classes = target.className.trim().split(/\s+/).filter(Boolean).slice(0, 2).join(".");
+        if (classes) desc += `.${classes}`;
+      }
+      return desc;
+    }
+    return String(target);
+  };
+
+  const renderList = (filter = "") => {
+    const listEl = document.getElementById("adblock-events-list");
+    const countEl = document.getElementById("adblock-events-count");
+    if (!listEl) return;
+
+    const currentEvents = window.__adblockCapturedEvents || [];
+    const query = filter.trim().toLowerCase();
+
+    const filtered = currentEvents.filter((item) => {
+      if (!query) return true;
+      const targetStr = getTargetDescription(item.target).toLowerCase();
+      const typeStr = (item.type || "").toLowerCase();
+      const fnStr = (item.fnName || "").toLowerCase();
+      return targetStr.includes(query) || typeStr.includes(query) || fnStr.includes(query);
+    });
+
+    if (countEl) countEl.textContent = filtered.length;
+
+    if (filtered.length === 0) {
+      listEl.innerHTML = `<div style="text-align: center; padding: 24px; color: #71717a; font-size: 12px;">수집된 이벤트 리스너가 없거나 검색 결과가 없습니다.</div>`;
+      return;
+    }
+
+    listEl.innerHTML = filtered.slice().reverse().map((item, idx) => {
+      const targetDesc = getTargetDescription(item.target);
+      const timeStr = item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : "";
+      const eventTypeColor = item.type === "click" ? "#f59e0b" : item.type === "scroll" ? "#3b82f6" : "#a855f7";
+
+      return `
+        <div style="background: #27272a; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; padding: 10px; font-size: 12px; display: flex; flex-direction: column; gap: 6px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+              <span style="background: ${eventTypeColor}22; color: ${eventTypeColor}; border: 1px solid ${eventTypeColor}44; padding: 2px 6px; border-radius: 4px; font-weight: 600; font-size: 11px;">${item.type}</span>
+              <span style="font-family: monospace; color: #4ade80; font-weight: 500;">${targetDesc}</span>
+            </div>
+            <span style="color: #71717a; font-size: 11px;">${timeStr}</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; color: #a1a1aa; font-size: 11px;">
+            <span>함수: <strong style="color: #e4e4e7;">${item.fnName || '(익명)'}</strong></span>
+            <button class="adblock-events-highlight-btn" data-idx="${filtered.length - 1 - idx}" style="background: none; border: none; color: #60a5fa; cursor: pointer; text-decoration: underline; font-size: 11px;">요소 탐색</button>
+          </div>
+          <details style="margin-top: 2px;">
+            <summary style="color: #71717a; cursor: pointer; font-size: 11px; user-select: none;">코드 보기</summary>
+            <pre style="margin: 6px 0 0 0; padding: 8px; background: #09090b; color: #f4f4f5; border-radius: 4px; font-family: monospace; font-size: 11px; white-space: pre-wrap; word-break: break-all; max-height: 120px; overflow-y: auto;">${(item.fnCode || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+          </details>
+        </div>
+      `;
+    }).join("");
+
+    listEl.querySelectorAll(".adblock-events-highlight-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        const itemIdx = parseInt(e.target.getAttribute("data-idx"), 10);
+        const item = filtered[itemIdx];
+        if (item && item.target && item.target.scrollIntoView) {
+          try {
+            item.target.scrollIntoView({ behavior: "smooth", block: "center" });
+            const origOutline = item.target.style.outline;
+            item.target.style.outline = "3px solid #a855f7";
+            setTimeout(() => {
+              item.target.style.outline = origOutline;
+            }, 2000);
+            if (typeof Toast !== "undefined" && Toast.show) Toast.show("해당 요소로 이동했습니다.");
+          } catch (err) {}
+        } else {
+          if (typeof Toast !== "undefined" && Toast.show) Toast.show("요소를 찾을 수 없거나 window/document 객체입니다.");
+        }
+      });
+    });
+  };
+
+  renderList();
+
+  document.getElementById("adblock-events-close")?.addEventListener("click", () => modalContainer.remove());
+
+  document.getElementById("adblock-events-search")?.addEventListener("input", (e) => {
+    renderList(e.target.value);
+  });
+
+  document.getElementById("adblock-events-console-log")?.addEventListener("click", () => {
+    console.log("[AdBlocker Captured Events]", window.__adblockCapturedEvents);
+    if (typeof Toast !== "undefined" && Toast.show) Toast.show("콘솔에 추적 결과를 출력했습니다 (F12 참고).");
+  });
+
+  document.getElementById("adblock-events-clear")?.addEventListener("click", () => {
+    window.__adblockCapturedEvents = [];
+    renderList();
+    if (typeof Toast !== "undefined" && Toast.show) Toast.show("추적 기록이 삭제되었습니다.");
+  });
+}
+
+function getReactAndDomHandlers(el) {
+  if (!el || typeof el !== 'object' || !el.tagName) return [];
+  const handlers = [];
+
+  // 1. React Props & Fiber Handlers
+  try {
+    const keys = Object.keys(el);
+    const reactKey = keys.find(k => 
+      k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$') || k.startsWith('__reactFiber$')
+    );
+
+    if (reactKey && el[reactKey]) {
+      let props = el[reactKey];
+      if (props.memoizedProps) props = props.memoizedProps;
+      if (props) {
+        Object.keys(props).forEach(propKey => {
+          if (propKey.startsWith('on') && typeof props[propKey] === 'function') {
+            const fn = props[propKey];
+            handlers.push({
+              source: 'React Component',
+              eventType: propKey.substring(2).toLowerCase(),
+              propName: propKey,
+              fnName: fn.name || '(익명 React 핸들러)',
+              fnCode: fn.toString(),
+              fn: fn
+            });
+          }
+        });
+      }
+    }
+  } catch (e) {}
+
+  // 2. Inline DOM Handlers (onclick, onchange, etc.)
+  try {
+    for (let prop in el) {
+      if (prop.startsWith('on') && typeof el[prop] === 'function') {
+        const fn = el[prop];
+        handlers.push({
+          source: 'DOM Inline',
+          eventType: prop.substring(2).toLowerCase(),
+          propName: prop,
+          fnName: fn.name || '(익명 Inline 핸들러)',
+          fnCode: fn.toString(),
+          fn: fn
+        });
+      }
+    }
+  } catch (e) {}
+
+  // 3. Captured addEventListener match
+  try {
+    if (window.__adblockCapturedEvents) {
+      window.__adblockCapturedEvents.forEach(evt => {
+        if (evt.target === el || (el.contains && evt.target && el.contains(evt.target))) {
+          handlers.push({
+            source: 'addEventListener',
+            eventType: evt.type,
+            propName: `addEventListener('${evt.type}')`,
+            fnName: evt.fnName,
+            fnCode: evt.fnCode
+          });
+        }
+      });
+    }
+  } catch (e) {}
+
+  return handlers;
+}
 
 function getGistConfig() {
   const defaultConfig = {
@@ -364,89 +649,67 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
     onClick: handleGistConfigClick || (() => showGistConfigModal()),
   });
 
-  if (isBlacklisted) {
-    const releaseBtn = new Button({
-      text: "블랙리스트해제",
-      variant: "danger",
-      size: "small",
-      onClick: handleBlacklistClick,
-    });
+  const pickerCoverBtn = new Button({
+    text: "선택자(흰색덮기)",
+    variant: "success",
+    size: "small",
+    onClick: handlePickerCoverClick,
+  });
 
-    releaseBtn.appendTo(menuWrapper);
-    scriptUpdateBtn.appendTo(menuWrapper);
-    gistConfigBtn.appendTo(menuWrapper);
-  } else {
-    const pickerCoverBtn = new Button({
-      text: "선택자(흰색덮기)",
-      variant: "success",
-      size: "small",
-      onClick: handlePickerCoverClick,
-    });
+  const pickerHideBtn = new Button({
+    text: "선택자(영역제거)",
+    variant: "success",
+    size: "small",
+    onClick: handlePickerHideClick,
+  });
 
-    const pickerHideBtn = new Button({
-      text: "선택자(영역제거)",
-      variant: "success",
-      size: "small",
-      onClick: handlePickerHideClick,
-    });
+  const urlBlockBtn = new Button({
+    text: "광고링크추가",
+    variant: "warning",
+    size: "small",
+    onClick: handleUrlBlockClick,
+  });
 
-    const urlBlockBtn = new Button({
-      text: "광고링크추가",
-      variant: "warning",
-      size: "small",
-      onClick: handleUrlBlockClick,
-    });
-
-    const styleInjectBtn = new Button({
-      text: "스타일주입",
-      variant: "danger",
-      size: "small",
-      onClick: handleStyleInjectClick,
-    });
-    if (styleInjectBtn && styleInjectBtn.element) {
-      styleInjectBtn.element.style.backgroundColor = '#f38ba8';
-      styleInjectBtn.element.style.color = '#11111b';
-      styleInjectBtn.element.style.fontWeight = '600';
-      styleInjectBtn.element.style.borderColor = '#f38ba8';
-    }
-
-    const shortcutBtn = new Button({
-      text: "⌨️ 단축키지정",
-      variant: "warning",
-      size: "small",
-      onClick: handleShortcutClick,
-    });
-    if (shortcutBtn && shortcutBtn.element) {
-      shortcutBtn.element.style.setProperty("background-color", "#a855f7", "important");
-      shortcutBtn.element.style.setProperty("background", "linear-gradient(135deg, #a855f7 0%, #7e22ce 100%)", "important");
-      shortcutBtn.element.style.setProperty("color", "#ffffff", "important");
-      shortcutBtn.element.style.setProperty("font-weight", "600", "important");
-      shortcutBtn.element.style.setProperty("border-color", "#a855f7", "important");
-    }
-
-    const deleteListBtn = new Button({
-      text: "설정제거창",
-      variant: "danger",
-      size: "small",
-      onClick: handleDeleteListClick,
-    });
-
-    const blacklistBtn = new Button({
-      text: "블랙리스트추가",
-      variant: "danger",
-      size: "small",
-      onClick: handleBlacklistClick,
-    });
-
-    pickerCoverBtn.appendTo(menuWrapper);
-    pickerHideBtn.appendTo(menuWrapper);
-    urlBlockBtn.appendTo(menuWrapper);
-    styleInjectBtn.appendTo(menuWrapper);
-    shortcutBtn.appendTo(menuWrapper);
-    deleteListBtn.appendTo(menuWrapper);
-    blacklistBtn.appendTo(menuWrapper);
-    gistConfigBtn.appendTo(menuWrapper);
+  const styleInjectBtn = new Button({
+    text: "스타일주입",
+    variant: "danger",
+    size: "small",
+    onClick: handleStyleInjectClick,
+  });
+  if (styleInjectBtn && styleInjectBtn.element) {
+    styleInjectBtn.element.style.backgroundColor = '#f38ba8';
+    styleInjectBtn.element.style.color = '#11111b';
+    styleInjectBtn.element.style.fontWeight = '600';
+    styleInjectBtn.element.style.borderColor = '#f38ba8';
   }
+
+  const shortcutBtn = new Button({
+    text: "⌨️ 단축키지정",
+    variant: "warning",
+    size: "small",
+    onClick: handleShortcutClick,
+  });
+  if (shortcutBtn && shortcutBtn.element) {
+    shortcutBtn.element.style.setProperty("background-color", "#a855f7", "important");
+    shortcutBtn.element.style.setProperty("background", "linear-gradient(135deg, #a855f7 0%, #7e22ce 100%)", "important");
+    shortcutBtn.element.style.setProperty("color", "#ffffff", "important");
+    shortcutBtn.element.style.setProperty("font-weight", "600", "important");
+    shortcutBtn.element.style.setProperty("border-color", "#a855f7", "important");
+  }
+
+  const deleteListBtn = new Button({
+    text: "설정제거창",
+    variant: "danger",
+    size: "small",
+    onClick: handleDeleteListClick,
+  });
+
+  pickerCoverBtn.appendTo(menuWrapper);
+  pickerHideBtn.appendTo(menuWrapper);
+  urlBlockBtn.appendTo(menuWrapper);
+  styleInjectBtn.appendTo(menuWrapper);
+  shortcutBtn.appendTo(menuWrapper);
+  deleteListBtn.appendTo(menuWrapper);
 
   groups.appendChild(menuWrapper);
   groups.appendChild(fabToggle);
@@ -1719,6 +1982,103 @@ function deduplicateShortcutList(list) {
   rulesArray = Array.from(ruleMap.values());
   GM_setValue("cachedRules", rulesArray);
 
+  const KOR_ENG_MAP = {
+    'q': 'ㅂ', 'w': 'ㅈ', 'e': 'ㄷ', 'r': 'ㄱ', 't': 'ㅅ', 'y': 'ㅛ', 'u': 'ㅕ', 'i': 'ㅑ', 'o': 'ㅐ', 'p': 'ㅔ',
+    'a': 'ㅁ', 's': 'ㄴ', 'd': 'ㅇ', 'f': 'ㄹ', 'g': 'ㅎ', 'h': 'ㅗ', 'j': 'ㅓ', 'k': 'ㅏ', 'l': 'ㅣ',
+    'z': 'ㅋ', 'x': 'ㅌ', 'c': 'ㅊ', 'v': 'ㅍ', 'b': 'ㅠ', 'n': 'ㅜ', 'm': 'ㅡ',
+    'Q': 'ㅃ', 'W': 'ㅉ', 'E': 'ㄸ', 'R': 'ㄲ', 'T': 'ㅆ', 'O': 'ㅖ', 'P': 'ㅖ',
+  };
+
+  const ENG_KOR_MAP = {};
+  Object.keys(KOR_ENG_MAP).forEach(eng => {
+    ENG_KOR_MAP[KOR_ENG_MAP[eng]] = eng.toLowerCase();
+  });
+
+  function getKorEngPair(char) {
+    if (!char) return [char];
+    const lower = char.toLowerCase();
+    if (KOR_ENG_MAP[lower]) {
+      return Array.from(new Set([char, KOR_ENG_MAP[lower]]));
+    }
+    if (ENG_KOR_MAP[char]) {
+      return Array.from(new Set([char, ENG_KOR_MAP[char]]));
+    }
+    return [char];
+  }
+
+  function parseAndExpandShortcutKeys(keyInput) {
+    let rawItems = [];
+    if (Array.isArray(keyInput)) {
+      rawItems = keyInput.map(k => String(k).trim()).filter(Boolean);
+    } else if (typeof keyInput === 'string') {
+      let str = keyInput.trim();
+      const regex = /([a-zA-Z0-9+_]+)?\(([^)]+)\)/g;
+      let match;
+      let expandedStrs = [str];
+
+      while ((match = regex.exec(str)) !== null) {
+        const fullMatch = match[0];
+        const prefix = match[1] || '';
+        const innerKeys = match[2].split(',').map(k => k.trim()).filter(Boolean);
+        const replacedParts = innerKeys.map(k => `${prefix}${k}`);
+        
+        const newExpanded = [];
+        expandedStrs.forEach(s => {
+          if (s.includes(fullMatch)) {
+            replacedParts.forEach(rp => {
+              newExpanded.push(s.replace(fullMatch, rp));
+            });
+          } else {
+            newExpanded.push(s);
+          }
+        });
+        expandedStrs = newExpanded;
+      }
+
+      rawItems = [];
+      expandedStrs.forEach(s => {
+        s.split(',').forEach(item => {
+          const trimmed = item.trim();
+          if (trimmed) rawItems.push(trimmed);
+        });
+      });
+    }
+
+    const resultList = [];
+    const addedKeys = new Set();
+
+    rawItems.forEach(item => {
+      const parts = item.split('+').map(p => p.trim()).filter(Boolean);
+      if (parts.length === 0) return;
+
+      if (parts.length === 1) {
+        const singleKey = parts[0];
+        const pairs = getKorEngPair(singleKey);
+        pairs.forEach(pk => {
+          if (!addedKeys.has(pk)) {
+            addedKeys.add(pk);
+            resultList.push({ isCombo: false, keys: [pk], raw: pk });
+          }
+        });
+      } else {
+        const modifiers = parts.slice(0, -1);
+        const lastKey = parts[parts.length - 1];
+        const pairs = getKorEngPair(lastKey);
+
+        pairs.forEach(pk => {
+          const comboList = [...modifiers, pk];
+          const comboKeyStr = comboList.join('+').toLowerCase();
+          if (!addedKeys.has(comboKeyStr)) {
+            addedKeys.add(comboKeyStr);
+            resultList.push({ isCombo: true, keys: comboList, raw: comboKeyStr });
+          }
+        });
+      }
+    });
+
+    return resultList;
+  }
+
   let activeShortcutCleanups = [];
 
   function initSiteShortcuts(activeRules = rulesArray) {
@@ -1747,14 +2107,8 @@ function deduplicateShortcutList(list) {
       const targetVal = typeof sc === 'object' ? sc.target : '';
       if (!keyVal || !targetVal) return;
 
-      let keyList = [];
-      if (Array.isArray(keyVal)) {
-        keyList = keyVal.map(k => String(k).trim()).filter(Boolean);
-      } else if (typeof keyVal === 'string') {
-        keyList = keyVal.split(',').map(k => k.trim()).filter(Boolean);
-      }
-
-      if (keyList.length === 0) return;
+      const expandedItems = parseAndExpandShortcutKeys(keyVal);
+      if (expandedItems.length === 0) return;
 
       const handleShortcutAction = (e) => {
         const activeEl = document.activeElement;
@@ -1782,30 +2136,37 @@ function deduplicateShortcutList(list) {
         }
       };
 
-      // 1. useKeyPress / useKeysPress 호출 (단일 키는 문자열 전달, 복수 키는 useKeysPress 또는 개별 useKeyPress)
-      if (keyList.length === 1) {
-        const singleKey = keyList[0];
-        if (typeof useKeyPress === 'function') {
-          const unbind = useKeyPress(singleKey, handleShortcutAction);
-          if (typeof unbind === 'function') activeShortcutCleanups.push(unbind);
-        }
-      } else {
-        if (typeof useKeysPress === 'function') {
-          const unbind = useKeysPress(keyList, handleShortcutAction);
-          if (typeof unbind === 'function') activeShortcutCleanups.push(unbind);
-        } else if (typeof useKeyPress === 'function') {
-          keyList.forEach(k => {
-            const unbind = useKeyPress(k, handleShortcutAction);
+      // 1. useKeyPress / useKeysPress 등록
+      expandedItems.forEach(item => {
+        if (!item.isCombo) {
+          const singleKey = item.keys[0];
+          if (typeof useKeyPress === 'function') {
+            const unbind = useKeyPress(singleKey, handleShortcutAction);
             if (typeof unbind === 'function') activeShortcutCleanups.push(unbind);
+          }
+        } else {
+          const normalizedKeys = item.keys.map(k => {
+            const lk = k.toLowerCase();
+            if (lk === 'ctrl' || lk === 'control') return 'Control';
+            if (lk === 'shift') return 'Shift';
+            if (lk === 'alt') return 'Alt';
+            if (lk === 'meta' || lk === 'cmd') return 'Meta';
+            return k;
           });
+
+          if (typeof useKeysPress === 'function') {
+            const unbind = useKeysPress(normalizedKeys, handleShortcutAction);
+            if (typeof unbind === 'function') activeShortcutCleanups.push(unbind);
+          } else if (typeof useKeyPress === 'function') {
+            const unbind = useKeyPress(item.keys[item.keys.length - 1], handleShortcutAction);
+            if (typeof unbind === 'function') activeShortcutCleanups.push(unbind);
+          }
         }
-      }
+      });
 
       // 2. 캡처링 전역 keydown 이벤트 리스너 (이벤트 씹힘/충돌 방지 백업)
-      const lowerKeyList = keyList.map(k => k.toLowerCase());
       const directKeyHandler = (e) => {
         if (!e || !e.key) return;
-        if (!lowerKeyList.includes(e.key.toLowerCase())) return;
 
         const activeEl = document.activeElement;
         if (activeEl) {
@@ -1814,6 +2175,31 @@ function deduplicateShortcutList(list) {
             return;
           }
         }
+
+        const isMatched = expandedItems.some(item => {
+          const targetKey = item.keys[item.keys.length - 1].toLowerCase();
+          const currentKey = e.key.toLowerCase();
+          if (targetKey !== currentKey) return false;
+
+          if (!item.isCombo) {
+            return !e.ctrlKey && !e.altKey && !e.metaKey;
+          } else {
+            const mods = item.keys.slice(0, -1).map(m => m.toLowerCase());
+            const needCtrl = mods.includes('ctrl') || mods.includes('control');
+            const needShift = mods.includes('shift');
+            const needAlt = mods.includes('alt');
+            const needMeta = mods.includes('meta') || mods.includes('cmd');
+
+            return (
+              (needCtrl === !!e.ctrlKey) &&
+              (needShift === !!e.shiftKey) &&
+              (needAlt === !!e.altKey) &&
+              (needMeta === !!e.metaKey)
+            );
+          }
+        });
+
+        if (!isMatched) return;
 
         try {
           const found = targetVal ? querySelectorAllExtended(targetVal) : [];
@@ -3349,6 +3735,13 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
 
   const setupFloatingButton = () => {
     const isBlacklisted = checkIsBlacklisted();
+
+    window.__adblock_openGistConfig = () => showGistConfigModal();
+    window.__adblock_openDeleteList = handleDeleteListClick;
+    window.__adblock_toggleBlacklist = isBlacklisted ? handleBlacklistReleaseClick : handleBlacklistClick;
+
+    registerTampermonkeyMenuCommands(isBlacklisted);
+
     makeButtonGroups({
       handleManualClick,
       handlePickerCoverClick,
