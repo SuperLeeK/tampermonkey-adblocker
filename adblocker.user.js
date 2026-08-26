@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202608211100
+// @version      202608261114
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -87,7 +87,14 @@ function registerTampermonkeyMenuCommands(isBlacklisted = false) {
         if (typeof window.__adblock_toggleBlacklist === "function") {
           window.__adblock_toggleBlacklist();
         } else {
-          if (typeof Toast !== "undefined" && Toast.show) Toast.show("블랙리스트 액션을 실행할 수 없습니다.");
+          const isCurrentlyBlacklisted = typeof checkIsBlacklisted === "function" ? checkIsBlacklisted() : isBlacklisted;
+          if (isCurrentlyBlacklisted && typeof handleBlacklistReleaseClick === "function") {
+            handleBlacklistReleaseClick();
+          } else if (!isCurrentlyBlacklisted && typeof handleBlacklistClick === "function") {
+            handleBlacklistClick();
+          } else {
+            if (typeof Toast !== "undefined" && Toast.show) Toast.show("블랙리스트 액션을 실행할 수 없습니다.");
+          }
         }
       });
 
@@ -3304,6 +3311,15 @@ function deduplicateShortcutList(list) {
       window.location.reload();
     }, 1000);
   }
+
+  window.__adblock_toggleBlacklist = () => {
+    const isCurBlacklisted = typeof checkIsBlacklisted === 'function' ? checkIsBlacklisted() : false;
+    if (isCurBlacklisted) {
+      handleBlacklistReleaseClick();
+    } else {
+      handleBlacklistClick();
+    }
+  };
 
   function handleHideReleaseForADay() {
     const expireTime = Date.now() + 24 * 60 * 60 * 1000;
