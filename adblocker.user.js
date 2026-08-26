@@ -544,41 +544,89 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
         transform: none !important;
         filter: none !important;
         clip: auto !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: none !important;
+        background: transparent !important;
+        box-sizing: border-box !important;
+        float: none !important;
+        width: auto !important;
+        height: auto !important;
+        max-width: none !important;
+        max-height: none !important;
       }
-      .adblock-fab-toggle {
-        width: 42px;
-        height: 42px;
-        border-radius: 50%;
-        background: #2563eb;
-        color: #ffffff;
-        border: 1px solid rgba(255, 255, 255, 0.2);
-        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 18px;
-        transition: transform 0.2s ease, background 0.2s ease;
-        outline: none;
+      #adblock-ui-group * {
+        box-sizing: border-box !important;
       }
-      .adblock-fab-toggle:hover {
-        transform: scale(1.08);
-        background: #1d4ed8;
+      .adblock-ui-fab-toggle {
+        width: 42px !important;
+        height: 42px !important;
+        border-radius: 50% !important;
+        background: #2563eb !important;
+        background-image: none !important;
+        color: #ffffff !important;
+        border: 1px solid rgba(255, 255, 255, 0.2) !important;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35) !important;
+        cursor: pointer !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        font-size: 18px !important;
+        transition: transform 0.2s ease, background 0.2s ease !important;
+        outline: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        float: none !important;
+        line-height: 1 !important;
+        position: relative !important;
+        top: auto !important;
+        right: auto !important;
+        bottom: auto !important;
+        left: auto !important;
       }
-      .adblock-menu-wrapper {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        opacity: 0;
-        transform: translateY(12px) scale(0.92);
-        transform-origin: bottom left;
-        pointer-events: none;
-        transition: opacity 0.22s ease, transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+      .adblock-ui-fab-toggle:hover {
+        transform: scale(1.08) !important;
+        background: #1d4ed8 !important;
       }
-      #adblock-ui-group.is-open .adblock-menu-wrapper {
-        opacity: 1;
-        transform: translateY(0) scale(1);
-        pointer-events: auto;
+      .adblock-ui-menu-wrapper {
+        display: flex !important;
+        flex-direction: column !important;
+        gap: 6px !important;
+        opacity: 0 !important;
+        visibility: hidden !important;
+        transform: translateY(12px) scale(0.92) !important;
+        transform-origin: bottom left !important;
+        pointer-events: none !important;
+        transition: opacity 0.22s ease, transform 0.22s cubic-bezier(0.4, 0, 0.2, 1), visibility 0.22s !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: none !important;
+        background: transparent !important;
+        float: none !important;
+        position: relative !important;
+        width: auto !important;
+        height: auto !important;
+      }
+      #adblock-ui-group.is-open .adblock-ui-menu-wrapper {
+        opacity: 1 !important;
+        visibility: visible !important;
+        transform: translateY(0) scale(1) !important;
+        pointer-events: auto !important;
+      }
+      #adblock-ui-group .adblock-ui-menu-wrapper button,
+      #adblock-ui-group .adblock-ui-menu-wrapper .btn {
+        margin: 0 !important;
+        float: none !important;
+        position: relative !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25) !important;
+        white-space: nowrap !important;
+        text-align: center !important;
+        font-family: system-ui, -apple-system, sans-serif !important;
+        width: auto !important;
+        max-width: none !important;
       }
       @media screen and (max-width: 768px) {
         #adblock-ui-group {
@@ -586,12 +634,13 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
           bottom: 12px !important;
           gap: 6px !important;
         }
-        .adblock-fab-toggle {
+        .adblock-ui-fab-toggle {
           width: 36px !important;
           height: 36px !important;
           font-size: 15px !important;
         }
-        .adblock-menu-wrapper button, .adblock-menu-wrapper .btn {
+        #adblock-ui-group .adblock-ui-menu-wrapper button,
+        #adblock-ui-group .adblock-ui-menu-wrapper .btn {
           padding: 4px 8px !important;
           font-size: 11px !important;
           height: auto !important;
@@ -606,12 +655,12 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
   groups.id = "adblock-ui-group";
 
   const fabToggle = document.createElement('button');
-  fabToggle.className = 'adblock-fab-toggle';
+  fabToggle.className = 'adblock-ui-fab-toggle';
   fabToggle.title = '광고 차단 메뉴';
   fabToggle.innerHTML = '🛡️';
 
   const menuWrapper = document.createElement('div');
-  menuWrapper.className = 'adblock-menu-wrapper';
+  menuWrapper.className = 'adblock-ui-menu-wrapper';
 
   fabToggle.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -3343,10 +3392,24 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
       .adblock-modal-item:hover {
         background: #313244;
       }
+      .adblock-modal-item.is-checked {
+        background: rgba(243, 139, 168, 0.18) !important;
+        border-color: #f38ba8 !important;
+      }
       .adblock-modal-item input[type="checkbox"] {
-        margin-top: 2px;
-        cursor: pointer;
-        accent-color: #f38ba8;
+        appearance: checkbox !important;
+        -webkit-appearance: checkbox !important;
+        width: 16px !important;
+        height: 16px !important;
+        min-width: 16px !important;
+        display: inline-block !important;
+        opacity: 1 !important;
+        visibility: visible !important;
+        position: static !important;
+        margin-top: 2px !important;
+        margin-right: 2px !important;
+        cursor: pointer !important;
+        accent-color: #f38ba8 !important;
       }
       .adblock-modal-footer {
         padding: 12px 18px;
@@ -3586,7 +3649,16 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
   overlay.appendChild(modal);
 
   function updateCount() {
-    const checkedCount = checkboxes.filter(cb => cb.checked).length;
+    let checkedCount = 0;
+    checkboxes.forEach(cb => {
+      const itemEl = cb.closest('.adblock-modal-item');
+      if (cb.checked) {
+        checkedCount++;
+        if (itemEl) itemEl.classList.add('is-checked');
+      } else {
+        if (itemEl) itemEl.classList.remove('is-checked');
+      }
+    });
     countSpan.textContent = `${checkedCount}개 선택됨`;
   }
 
