@@ -848,6 +848,63 @@ function clipboardEventListener({ handleClick }) {
           return true;
         }
       }, true);
+
+      // --- Anti-DevTools Detection & Auto-Redirect Defense ---
+      // 1. Function("debugger") 및 eval("debugger") 무력화
+      try {
+        const origFunction = Function.prototype.constructor;
+        const handler = {
+          construct(target, args) {
+            if (args[0] && typeof args[0] === 'string' && args[0].includes('debugger')) {
+              return function() {};
+            }
+            return new target(...args);
+          },
+          apply(target, thisArg, args) {
+            if (args[0] && typeof args[0] === 'string' && args[0].includes('debugger')) {
+              return function() {};
+            }
+            return target.apply(thisArg, args);
+          }
+        };
+        window.Function = new Proxy(Function, handler);
+      } catch (e) {}
+
+      // 2. DevTools 감지 기반 history.back() / history.go(-1) 무단 이동 방어
+      try {
+        const origBack = history.back;
+        const origGo = history.go;
+        
+        history.back = function() {
+          const stack = new Error().stack || "";
+          if (stack.includes("disable") || stack.includes("devtools") || stack.includes("detector") || stack.includes("console")) {
+            console.warn("[Dynamic Ad Blocker] Blocked automated history.back() devtools redirect.");
+            return;
+          }
+          return origBack.apply(this, arguments);
+        };
+        
+        history.go = function(delta) {
+          if (delta === -1 || delta < 0) {
+            const stack = new Error().stack || "";
+            if (stack.includes("disable") || stack.includes("devtools") || stack.includes("detector") || stack.includes("console")) {
+              console.warn("[Dynamic Ad Blocker] Blocked automated history.go() devtools redirect.");
+              return;
+            }
+          }
+          return origGo.apply(this, arguments);
+        };
+      } catch (e) {}
+
+      // 3. console.clear() 및 감지 트랩 무력화
+      try {
+        if (typeof console !== 'undefined' && console.clear) {
+          console.clear = function() {
+            console.warn("[Dynamic Ad Blocker] Suppressed console.clear() devtools detection sweep.");
+          };
+        }
+      } catch (e) {}
+
     } catch (err) {}
   })();`;
 
@@ -873,6 +930,29 @@ function clipboardEventListener({ handleClick }) {
           return;
         }
         return origAlert.apply(this, arguments);
+      };
+    }
+
+    if (targetWin.history) {
+      const origBack = targetWin.history.back;
+      const origGo = targetWin.history.go;
+      targetWin.history.back = function() {
+        const stack = new Error().stack || "";
+        if (stack.includes("disable") || stack.includes("devtools") || stack.includes("detector") || stack.includes("console")) {
+          console.warn("[Dynamic Ad Blocker] Suppressed history.back() via unsafeWindow");
+          return;
+        }
+        return origBack.apply(this, arguments);
+      };
+      targetWin.history.go = function(delta) {
+        if (delta === -1 || delta < 0) {
+          const stack = new Error().stack || "";
+          if (stack.includes("disable") || stack.includes("devtools") || stack.includes("detector") || stack.includes("console")) {
+            console.warn("[Dynamic Ad Blocker] Suppressed history.go() via unsafeWindow");
+            return;
+          }
+        }
+        return origGo.apply(this, arguments);
       };
     }
   } catch (e) {}
