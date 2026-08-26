@@ -51,6 +51,12 @@ function registerTampermonkeyMenuCommands(isBlacklisted = false) {
         }
       });
 
+      GM_registerMenuCommand("🖼️ 이미지 블러 토글", () => {
+        if (typeof window.__adblock_toggleImageBlur === "function") {
+          window.__adblock_toggleImageBlur();
+        }
+      });
+
       GM_registerMenuCommand("🎧 이벤트 리스너 추적 결과", () => {
         if (typeof showCapturedEventsModal === "function") {
           showCapturedEventsModal();
@@ -484,6 +490,41 @@ function showGistConfigModal(onSaved) {
   };
 }
 
+function isImageBlurEnabled() {
+  return GM_getValue("adblock_image_blur_enabled", false);
+}
+
+function applyImageBlurStyle(enabled) {
+  let style = document.getElementById("adblock-image-blur-style");
+  if (enabled) {
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "adblock-image-blur-style";
+      style.textContent = `
+        img:not(#adblock-ui-group img):not(.adblock-ui-fab-toggle img),
+        picture:not(#adblock-ui-group picture),
+        video:not(#adblock-ui-group video),
+        canvas:not(#adblock-ui-group canvas) {
+          filter: blur(14px) !important;
+          transition: filter 0.22s ease-in-out !important;
+        }
+        img:not(#adblock-ui-group img):not(.adblock-ui-fab-toggle img):hover,
+        picture:not(#adblock-ui-group picture):hover,
+        video:not(#adblock-ui-group video):hover,
+        canvas:not(#adblock-ui-group canvas):hover {
+          filter: none !important;
+        }
+      `;
+      (document.head || document.documentElement).appendChild(style);
+    }
+  } else {
+    if (style) style.remove();
+  }
+}
+
+// 극초기 자동 실행
+applyImageBlurStyle(isImageBlurEnabled());
+
 function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePickerHideClick, handleStyleInjectClick, handleShortcutClick, handleBlacklistClick, handleUrlBlockClick, handleDeleteListClick, handleHideReleaseClick, handleGistConfigClick, isBlacklisted = false }) {
   if (!document.getElementById('adblock-responsive-style')) {
     const responsiveStyle = document.createElement('style');
@@ -758,6 +799,53 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
   urlBlockBtn.appendTo(menuWrapper);
   styleInjectBtn.appendTo(menuWrapper);
   shortcutBtn.appendTo(menuWrapper);
+  const isBlurActive = isImageBlurEnabled();
+  const imageBlurBtn = new Button({
+    text: isBlurActive ? "🖼️ 이미지 블러 [ON]" : "🖼️ 이미지 블러 [OFF]",
+    variant: isBlurActive ? "success" : "warning",
+    size: "small",
+    onClick: () => {
+      const nextState = !isImageBlurEnabled();
+      GM_setValue("adblock_image_blur_enabled", nextState);
+      applyImageBlurStyle(nextState);
+
+      if (imageBlurBtn && imageBlurBtn.element) {
+        imageBlurBtn.element.textContent = nextState ? "🖼️ 이미지 블러 [ON]" : "🖼️ 이미지 블러 [OFF]";
+        imageBlurBtn.element.style.backgroundColor = nextState ? "#22c55e" : "#eab308";
+        imageBlurBtn.element.style.borderColor = nextState ? "#4ade80" : "#fde047";
+        imageBlurBtn.element.style.color = "#09090b";
+      }
+      if (typeof Toast !== "undefined" && Toast.show) {
+        Toast.show(nextState ? "이미지 80% 블러 모드가 켜졌습니다. (Hover 시 원본 보기)" : "이미지 블러 모드가 꺼졌습니다.");
+      }
+    },
+  });
+  if (imageBlurBtn && imageBlurBtn.element) {
+    imageBlurBtn.element.style.backgroundColor = isBlurActive ? '#22c55e' : '#eab308';
+    imageBlurBtn.element.style.color = '#09090b';
+    imageBlurBtn.element.style.fontWeight = '600';
+    imageBlurBtn.element.style.borderColor = isBlurActive ? '#4ade80' : '#fde047';
+  }
+
+  window.__adblock_toggleImageBlur = () => {
+    if (imageBlurBtn && imageBlurBtn.element) {
+      imageBlurBtn.element.click();
+    } else {
+      const nextState = !isImageBlurEnabled();
+      GM_setValue("adblock_image_blur_enabled", nextState);
+      applyImageBlurStyle(nextState);
+      if (typeof Toast !== "undefined" && Toast.show) {
+        Toast.show(nextState ? "이미지 80% 블러 모드가 켜졌습니다." : "이미지 블러 모드가 꺼졌습니다.");
+      }
+    }
+  };
+
+  pickerCoverBtn.appendTo(menuWrapper);
+  pickerHideBtn.appendTo(menuWrapper);
+  urlBlockBtn.appendTo(menuWrapper);
+  styleInjectBtn.appendTo(menuWrapper);
+  shortcutBtn.appendTo(menuWrapper);
+  imageBlurBtn.appendTo(menuWrapper);
   deleteListBtn.appendTo(menuWrapper);
 
   groups.appendChild(menuWrapper);
@@ -849,7 +937,7 @@ function clipboardEventListener({ handleClick }) {
         }
       }, true);
 
-      // --- Anti-DevTools Detection & Auto-Redirect Defense ---
+      // --- Anti-DevTools Detection Defense ---
       // 1. Function("debugger") 및 eval("debugger") 무력화
       try {
         const origFunction = Function.prototype.constructor;
@@ -870,33 +958,7 @@ function clipboardEventListener({ handleClick }) {
         window.Function = new Proxy(Function, handler);
       } catch (e) {}
 
-      // 2. DevTools 감지 기반 history.back() / history.go(-1) 무단 이동 방어
-      try {
-        const origBack = history.back;
-        const origGo = history.go;
-        
-        history.back = function() {
-          const stack = new Error().stack || "";
-          if (stack.includes("disable") || stack.includes("devtools") || stack.includes("detector") || stack.includes("console")) {
-            console.warn("[Dynamic Ad Blocker] Blocked automated history.back() devtools redirect.");
-            return;
-          }
-          return origBack.apply(this, arguments);
-        };
-        
-        history.go = function(delta) {
-          if (delta === -1 || delta < 0) {
-            const stack = new Error().stack || "";
-            if (stack.includes("disable") || stack.includes("devtools") || stack.includes("detector") || stack.includes("console")) {
-              console.warn("[Dynamic Ad Blocker] Blocked automated history.go() devtools redirect.");
-              return;
-            }
-          }
-          return origGo.apply(this, arguments);
-        };
-      } catch (e) {}
-
-      // 3. console.clear() 및 감지 트랩 무력화
+      // 2. console.clear() 및 감지 트랩 무력화
       try {
         if (typeof console !== 'undefined' && console.clear) {
           console.clear = function() {
@@ -930,29 +992,6 @@ function clipboardEventListener({ handleClick }) {
           return;
         }
         return origAlert.apply(this, arguments);
-      };
-    }
-
-    if (targetWin.history) {
-      const origBack = targetWin.history.back;
-      const origGo = targetWin.history.go;
-      targetWin.history.back = function() {
-        const stack = new Error().stack || "";
-        if (stack.includes("disable") || stack.includes("devtools") || stack.includes("detector") || stack.includes("console")) {
-          console.warn("[Dynamic Ad Blocker] Suppressed history.back() via unsafeWindow");
-          return;
-        }
-        return origBack.apply(this, arguments);
-      };
-      targetWin.history.go = function(delta) {
-        if (delta === -1 || delta < 0) {
-          const stack = new Error().stack || "";
-          if (stack.includes("disable") || stack.includes("devtools") || stack.includes("detector") || stack.includes("console")) {
-            console.warn("[Dynamic Ad Blocker] Suppressed history.go() via unsafeWindow");
-            return;
-          }
-        }
-        return origGo.apply(this, arguments);
       };
     }
   } catch (e) {}
