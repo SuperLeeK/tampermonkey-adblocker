@@ -26,6 +26,9 @@
 // ==/UserScript==
 
 function registerTampermonkeyMenuCommands(isBlacklisted = false) {
+  if (window.__adblockMenuRegistered) return;
+  window.__adblockMenuRegistered = true;
+
   if (typeof GM_registerMenuCommand !== "undefined") {
     try {
       GM_registerMenuCommand("🎈 플로팅버튼 토글", () => {
@@ -491,10 +494,14 @@ function showGistConfigModal(onSaved) {
 }
 
 function isImageBlurEnabled() {
-  return GM_getValue("adblock_image_blur_enabled", false);
+  return GM_getValue("adblock_image_blur_enabled", true);
 }
 
 function applyImageBlurStyle(enabled) {
+  if (typeof checkIsBlacklisted === 'function' && checkIsBlacklisted()) {
+    enabled = false;
+  }
+
   let style = document.getElementById("adblock-image-blur-style");
   if (enabled) {
     if (!style) {
@@ -504,26 +511,103 @@ function applyImageBlurStyle(enabled) {
         img:not(#adblock-ui-group img):not(.adblock-ui-fab-toggle img),
         picture:not(#adblock-ui-group picture),
         video:not(#adblock-ui-group video),
-        canvas:not(#adblock-ui-group canvas) {
+        canvas:not(#adblock-ui-group canvas),
+        [style*="background-image"]:not(#adblock-ui-group *),
+        [style*="background: url"]:not(#adblock-ui-group *),
+        [style*="background:url"]:not(#adblock-ui-group *) {
           filter: blur(14px) !important;
-          transition: filter 0.22s ease-in-out !important;
+          -webkit-filter: blur(14px) !important;
+          transition: filter 0.2s ease-in-out, -webkit-filter 0.2s ease-in-out !important;
         }
+        .adblock-blur-hovered,
+        .adblock-blur-hovered *,
+        img.adblock-blur-hovered,
+        picture.adblock-blur-hovered,
+        video.adblock-blur-hovered,
+        canvas.adblock-blur-hovered,
         img:not(#adblock-ui-group img):not(.adblock-ui-fab-toggle img):hover,
         picture:not(#adblock-ui-group picture):hover,
         video:not(#adblock-ui-group video):hover,
-        canvas:not(#adblock-ui-group canvas):hover {
+        canvas:not(#adblock-ui-group canvas):hover,
+        [style*="background-image"]:not(#adblock-ui-group *):hover,
+        [style*="background: url"]:not(#adblock-ui-group *):hover,
+        [style*="background:url"]:not(#adblock-ui-group *):hover {
           filter: none !important;
+          -webkit-filter: none !important;
         }
       `;
       (document.head || document.documentElement).appendChild(style);
     }
+
+    if (!window.__adblockBlurEventsBound) {
+      window.__adblockBlurEventsBound = true;
+      let lastHoveredSet = new Set();
+
+      const updateBlurHoverState = (e) => {
+        if (!isImageBlurEnabled()) return;
+
+        let targetEls = [];
+        try {
+          if (document.elementsFromPoint) {
+            targetEls = document.elementsFromPoint(e.clientX, e.clientY) || [];
+          }
+        } catch (err) {}
+
+        const currentSet = new Set();
+
+        targetEls.forEach(el => {
+          if (!el || el.closest("#adblock-ui-group")) return;
+
+          if (el.matches("img, picture, video, canvas, [style*='background-image'], [style*='background:']")) {
+            currentSet.add(el);
+          }
+          const childImg = el.querySelector("img, picture, video, canvas, [style*='background-image'], [style*='background:']");
+          if (childImg) {
+            currentSet.add(childImg);
+          }
+        });
+
+        lastHoveredSet.forEach(el => {
+          if (!currentSet.has(el)) {
+            el.classList.remove("adblock-blur-hovered");
+          }
+        });
+
+        currentSet.forEach(el => {
+          el.classList.add("adblock-blur-hovered");
+        });
+
+        lastHoveredSet = currentSet;
+      };
+
+      document.addEventListener("mousemove", updateBlurHoverState, { capture: true, passive: true });
+    }
   } else {
     if (style) style.remove();
+    document.querySelectorAll(".adblock-blur-hovered").forEach(el => el.classList.remove("adblock-blur-hovered"));
   }
 }
 
 // 극초기 자동 실행
 applyImageBlurStyle(isImageBlurEnabled());
+
+window.__adblock_toggleImageBlur = function() {
+  const nextState = !isImageBlurEnabled();
+  GM_setValue("adblock_image_blur_enabled", nextState);
+  applyImageBlurStyle(nextState);
+  
+  const blurBtn = document.getElementById("adblock-image-blur-btn");
+  if (blurBtn) {
+    blurBtn.textContent = nextState ? "🖼️ 이미지 블러 ON" : "🖼️ 이미지 블러 OFF";
+    blurBtn.style.backgroundColor = nextState ? "#22c55e" : "#eab308";
+    blurBtn.style.borderColor = nextState ? "#4ade80" : "#fde047";
+    blurBtn.style.color = "#09090b";
+  }
+
+  if (typeof Toast !== "undefined" && Toast.show) {
+    Toast.show(nextState ? "이미지 80% 블러 모드가 켜졌습니다. (Hover 시 원본 보기)" : "이미지 블러 모드가 꺼졌습니다.");
+  }
+};
 
 function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePickerHideClick, handleStyleInjectClick, handleShortcutClick, handleBlacklistClick, handleUrlBlockClick, handleDeleteListClick, handleHideReleaseClick, handleGistConfigClick, isBlacklisted = false }) {
   if (!document.getElementById('adblock-responsive-style')) {
@@ -743,28 +827,28 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
     text: "선택자(흰색덮기)",
     variant: "success",
     size: "small",
-    onClick: handlePickerCoverClick,
+    onClick: handlePickerCoverClick || (() => Toast.show("블랙리스트에 등록된 사이트에서는 사용할 수 없습니다.")),
   });
 
   const pickerHideBtn = new Button({
     text: "선택자(영역제거)",
     variant: "success",
     size: "small",
-    onClick: handlePickerHideClick,
+    onClick: handlePickerHideClick || (() => Toast.show("블랙리스트에 등록된 사이트에서는 사용할 수 없습니다.")),
   });
 
   const urlBlockBtn = new Button({
     text: "광고링크추가",
     variant: "warning",
     size: "small",
-    onClick: handleUrlBlockClick,
+    onClick: handleUrlBlockClick || (() => Toast.show("블랙리스트에 등록된 사이트에서는 사용할 수 없습니다.")),
   });
 
   const styleInjectBtn = new Button({
     text: "스타일주입",
     variant: "danger",
     size: "small",
-    onClick: handleStyleInjectClick,
+    onClick: handleStyleInjectClick || (() => Toast.show("블랙리스트에 등록된 사이트에서는 사용할 수 없습니다.")),
   });
   if (styleInjectBtn && styleInjectBtn.element) {
     styleInjectBtn.element.style.backgroundColor = '#f38ba8';
@@ -777,7 +861,7 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
     text: "⌨️ 단축키지정",
     variant: "warning",
     size: "small",
-    onClick: handleShortcutClick,
+    onClick: handleShortcutClick || (() => Toast.show("블랙리스트에 등록된 사이트에서는 사용할 수 없습니다.")),
   });
   if (shortcutBtn && shortcutBtn.element) {
     shortcutBtn.element.style.setProperty("background-color", "#a855f7", "important");
@@ -791,54 +875,32 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
     text: "설정제거창",
     variant: "danger",
     size: "small",
-    onClick: handleDeleteListClick,
+    onClick: handleDeleteListClick || (() => Toast.show("블랙리스트에 등록된 사이트에서는 사용할 수 없습니다.")),
   });
 
-  pickerCoverBtn.appendTo(menuWrapper);
-  pickerHideBtn.appendTo(menuWrapper);
-  urlBlockBtn.appendTo(menuWrapper);
-  styleInjectBtn.appendTo(menuWrapper);
-  shortcutBtn.appendTo(menuWrapper);
+  const blacklistBtn = new Button({
+    text: isBlacklisted ? "🟢 블랙리스트 해제" : "⛔ 블랙리스트 추가",
+    variant: isBlacklisted ? "success" : "danger",
+    size: "small",
+    onClick: handleBlacklistClick,
+  });
+
   const isBlurActive = isImageBlurEnabled();
   const imageBlurBtn = new Button({
-    text: isBlurActive ? "🖼️ 이미지 블러 [ON]" : "🖼️ 이미지 블러 [OFF]",
+    text: isBlurActive ? "🖼️ 이미지 블러 ON" : "🖼️ 이미지 블러 OFF",
     variant: isBlurActive ? "success" : "warning",
     size: "small",
     onClick: () => {
-      const nextState = !isImageBlurEnabled();
-      GM_setValue("adblock_image_blur_enabled", nextState);
-      applyImageBlurStyle(nextState);
-
-      if (imageBlurBtn && imageBlurBtn.element) {
-        imageBlurBtn.element.textContent = nextState ? "🖼️ 이미지 블러 [ON]" : "🖼️ 이미지 블러 [OFF]";
-        imageBlurBtn.element.style.backgroundColor = nextState ? "#22c55e" : "#eab308";
-        imageBlurBtn.element.style.borderColor = nextState ? "#4ade80" : "#fde047";
-        imageBlurBtn.element.style.color = "#09090b";
-      }
-      if (typeof Toast !== "undefined" && Toast.show) {
-        Toast.show(nextState ? "이미지 80% 블러 모드가 켜졌습니다. (Hover 시 원본 보기)" : "이미지 블러 모드가 꺼졌습니다.");
-      }
+      window.__adblock_toggleImageBlur();
     },
   });
   if (imageBlurBtn && imageBlurBtn.element) {
+    imageBlurBtn.element.id = "adblock-image-blur-btn";
     imageBlurBtn.element.style.backgroundColor = isBlurActive ? '#22c55e' : '#eab308';
     imageBlurBtn.element.style.color = '#09090b';
     imageBlurBtn.element.style.fontWeight = '600';
     imageBlurBtn.element.style.borderColor = isBlurActive ? '#4ade80' : '#fde047';
   }
-
-  window.__adblock_toggleImageBlur = () => {
-    if (imageBlurBtn && imageBlurBtn.element) {
-      imageBlurBtn.element.click();
-    } else {
-      const nextState = !isImageBlurEnabled();
-      GM_setValue("adblock_image_blur_enabled", nextState);
-      applyImageBlurStyle(nextState);
-      if (typeof Toast !== "undefined" && Toast.show) {
-        Toast.show(nextState ? "이미지 80% 블러 모드가 켜졌습니다." : "이미지 블러 모드가 꺼졌습니다.");
-      }
-    }
-  };
 
   pickerCoverBtn.appendTo(menuWrapper);
   pickerHideBtn.appendTo(menuWrapper);
@@ -847,6 +909,7 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
   shortcutBtn.appendTo(menuWrapper);
   imageBlurBtn.appendTo(menuWrapper);
   deleteListBtn.appendTo(menuWrapper);
+  blacklistBtn.appendTo(menuWrapper);
 
   groups.appendChild(menuWrapper);
   groups.appendChild(fabToggle);
@@ -1018,16 +1081,16 @@ function isMatch(ruleStr, targetStr) {
   const cleanRule = ruleStr.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "").trim().toLowerCase();
   const cleanTarget = targetStr.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "").trim().toLowerCase();
 
+  // 1. 정확히 지정한 도메인만 일치 (Strict Exact Match)
   if (cleanRule === cleanTarget) {
     return true;
   }
 
+  // 2. 와일드카드(*)가 포함된 경우만 패턴 매칭
   if (cleanRule.includes("*")) {
-    // . + ? ^ $ { } ( ) | [ ] \ 등 정규식 특수문자 이스케이프 (* 제외)
     const escaped = cleanRule.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
-    // 와일드카드 * 를 .* 로 치환
     const wildcardRegexStr = escaped.replace(/\*/g, ".*");
-    const regexStr = "(^|\\.)" + wildcardRegexStr + "$";
+    const regexStr = "^" + wildcardRegexStr + "$";
     try {
       const regex = new RegExp(regexStr);
       return regex.test(cleanTarget);
@@ -1036,7 +1099,7 @@ function isMatch(ruleStr, targetStr) {
     }
   }
 
-  return cleanTarget.endsWith("." + cleanRule) || cleanRule.endsWith("." + cleanTarget);
+  return false;
 }
 
 function getWildcardDomain(domainOrUrl) {
@@ -3913,12 +3976,24 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
     });
   }
 
+  function normalizeDomain(str) {
+    if (!str || typeof str !== 'string') return '';
+    return str.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').trim().toLowerCase();
+  }
+
   function checkIsBlacklisted() {
     try {
       const cached = GM_getValue("cachedBlackList", []);
-      const host = window.location.hostname;
-      const origin = window.location.origin;
-      return cached.some(item => item === host || item === origin || (typeof isMatch === 'function' && isMatch(item.replace(/^https?:\/\//, ""), host)));
+      const currentHost = normalizeDomain(window.location.hostname || window.location.host || window.location.origin);
+      if (!currentHost) return false;
+
+      return cached.some(item => {
+        const normItem = normalizeDomain(item);
+        if (!normItem) return false;
+        if (normItem === currentHost) return true;
+        if (typeof isMatch === 'function' && isMatch(normItem, currentHost)) return true;
+        return false;
+      });
     } catch (e) {
       return false;
     }
@@ -3932,6 +4007,13 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
     window.__adblock_toggleBlacklist = isBlacklisted ? handleBlacklistReleaseClick : handleBlacklistClick;
 
     registerTampermonkeyMenuCommands(isBlacklisted);
+
+    if (isBlacklisted) {
+      // 블랙리스트 사이트에서는 플로팅 버튼 그룹 생성 안함 (혹시 있으면 제거)
+      const existing = document.getElementById("adblock-ui-group");
+      if (existing) existing.remove();
+      return;
+    }
 
     makeButtonGroups({
       handleManualClick,
@@ -3950,29 +4032,52 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
   setupFloatingButton();
 
   function ensureFloatingButtonExists() {
-    if (!document.body || window.__adblock_isFloatingHidden) return;
+    if (checkIsBlacklisted()) {
+      const existing = document.getElementById("adblock-ui-group");
+      if (existing) existing.remove();
+      return;
+    }
+
+    if (window.__adblock_isFloatingHidden) return;
+    const targetParent = document.body || document.documentElement;
+    if (!targetParent) return;
+
     let uiGroup = document.getElementById("adblock-ui-group");
 
-    if (!uiGroup || !document.body.contains(uiGroup)) {
+    if (!uiGroup || !targetParent.contains(uiGroup)) {
       if (uiGroup) {
-        document.body.appendChild(uiGroup);
+        targetParent.appendChild(uiGroup);
       } else {
         setupFloatingButton();
         uiGroup = document.getElementById("adblock-ui-group");
       }
     }
 
-    if (uiGroup && document.body) {
-      if (document.body.lastElementChild !== uiGroup) {
-        document.body.appendChild(uiGroup);
+    if (uiGroup && targetParent) {
+      if (targetParent.lastElementChild !== uiGroup) {
+        targetParent.appendChild(uiGroup);
       }
       uiGroup.style.zIndex = "2147483647";
       uiGroup.style.display = "flex";
       uiGroup.style.visibility = "visible";
+      uiGroup.style.opacity = "1";
     }
   }
 
   window.__adblock_ensureFloatingButton = ensureFloatingButtonExists;
+  
+  if (!window.__adblock_observerBound) {
+    window.__adblock_observerBound = true;
+    try {
+      const observer = new MutationObserver(() => {
+        ensureFloatingButtonExists();
+      });
+      if (document.documentElement) {
+        observer.observe(document.documentElement, { childList: true });
+      }
+    } catch (e) {}
+    setInterval(ensureFloatingButtonExists, 2000);
+  }
   window.__adblock_toggleFloatingButton = function() {
     let uiGroup = document.getElementById("adblock-ui-group");
     const isCurrentlyVisible = uiGroup && uiGroup.style.display !== "none" && uiGroup.style.visibility !== "hidden";
