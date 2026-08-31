@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202608261114
+// @version      202608311114
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -500,12 +500,56 @@ function showGistConfigModal(onSaved) {
   };
 }
 
+function normalizeDomain(str) {
+  if (!str || typeof str !== 'string') return '';
+  return str.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').trim().toLowerCase();
+}
+
+function checkIsBlacklisted() {
+  try {
+    const cached = GM_getValue("cachedBlackList", []);
+    const currentHost = normalizeDomain(window.location.hostname || window.location.host || window.location.origin);
+    if (!currentHost) return false;
+
+    return cached.some(item => {
+      const normItem = normalizeDomain(item);
+      if (!normItem) return false;
+      if (normItem === currentHost) return true;
+      if (typeof isMatch === 'function' && isMatch(normItem, currentHost)) return true;
+      return false;
+    });
+  } catch (e) {
+    return false;
+  }
+}
+
+function getImageBlurStorageKey() {
+  let host = "";
+  try {
+    if (window.top && window.top.location && window.top.location.hostname) {
+      host = window.top.location.hostname;
+    }
+  } catch (e) {
+    if (document.referrer) {
+      try {
+        const refUrl = new URL(document.referrer);
+        host = refUrl.hostname;
+      } catch (err) {}
+    }
+  }
+  if (!host && window.location && window.location.hostname) {
+    host = window.location.hostname;
+  }
+  if (!host) host = "global";
+  return "adblock_image_blur_enabled_" + host;
+}
+
 function isImageBlurEnabled() {
-  return GM_getValue("adblock_image_blur_enabled", true);
+  return GM_getValue(getImageBlurStorageKey(), true);
 }
 
 function applyImageBlurStyle(enabled) {
-  if (typeof checkIsBlacklisted === 'function' && checkIsBlacklisted()) {
+  if (checkIsBlacklisted()) {
     enabled = false;
   }
 
@@ -600,7 +644,7 @@ applyImageBlurStyle(isImageBlurEnabled());
 
 window.__adblock_toggleImageBlur = function() {
   const nextState = !isImageBlurEnabled();
-  GM_setValue("adblock_image_blur_enabled", nextState);
+  GM_setValue(getImageBlurStorageKey(), nextState);
   applyImageBlurStyle(nextState);
   
   const blurBtn = document.getElementById("adblock-image-blur-btn");
@@ -672,7 +716,7 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
         gap: 8px !important;
         visibility: visible !important;
         opacity: 1 !important;
-        pointer-events: auto !important;
+        pointer-events: none !important;
         transform: none !important;
         filter: none !important;
         clip: auto !important;
@@ -715,6 +759,7 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
         right: auto !important;
         bottom: auto !important;
         left: auto !important;
+        pointer-events: auto !important;
       }
       .adblock-ui-fab-toggle:hover {
         transform: scale(1.08) !important;
@@ -2179,46 +2224,37 @@ function deduplicateShortcutList(list) {
   return result;
 }
 
-  // Gist 룰과 로컬 캐시 룰 병합하여 방금 추가된 로컬 와일드카드 규칙이 덮어씌워져 손실되는 현상 방지
-  const localCachedRules = GM_getValue("cachedRules", []);
-  const ruleMap = new Map();
-  freshRulesArray.forEach(r => {
-    if (r && r.host) {
-      r.selectorList = deduplicateRuleList(r.selectorList);
-      r.displayNoneSelectorList = deduplicateRuleList(r.displayNoneSelectorList);
-      r.customStyleList = deduplicateRuleList(r.customStyleList);
-      r.shortcuts = deduplicateShortcutList(r.shortcuts);
-      ruleMap.set(r.host, r);
-    }
-  });
-  localCachedRules.forEach(r => {
-    if (r && r.host) {
-      if (!ruleMap.has(r.host)) {
+  // Gist 룰을 정상적으로 불러온 경우 Gist 원격 데이터(Single Source of Truth)를 최우선으로 반영하여
+  // 타 기기나 Gist에서 삭제한 선택자가 이전 로컬 캐시와 병합되어 다시 부활하는 현상을 방지
+  if (freshRulesArray && freshRulesArray.length > 0) {
+    const ruleMap = new Map();
+    freshRulesArray.forEach(r => {
+      if (r && r.host) {
         r.selectorList = deduplicateRuleList(r.selectorList);
         r.displayNoneSelectorList = deduplicateRuleList(r.displayNoneSelectorList);
         r.customStyleList = deduplicateRuleList(r.customStyleList);
         r.shortcuts = deduplicateShortcutList(r.shortcuts);
         ruleMap.set(r.host, r);
-      } else {
-        // 기존 항목이 있으면 선택자 목록 통합 후 중복 제거
-        const existing = ruleMap.get(r.host);
-        if (r.selectorList) {
-          existing.selectorList = deduplicateRuleList([...(existing.selectorList || []), ...r.selectorList]);
-        }
-        if (r.displayNoneSelectorList) {
-          existing.displayNoneSelectorList = deduplicateRuleList([...(existing.displayNoneSelectorList || []), ...r.displayNoneSelectorList]);
-        }
-        if (r.customStyleList) {
-          existing.customStyleList = deduplicateRuleList([...(existing.customStyleList || []), ...r.customStyleList]);
-        }
-        if (r.shortcuts) {
-          existing.shortcuts = deduplicateShortcutList([...(existing.shortcuts || []), ...r.shortcuts]);
-        }
       }
-    }
-  });
-  rulesArray = Array.from(ruleMap.values());
-  GM_setValue("cachedRules", rulesArray);
+    });
+    rulesArray = Array.from(ruleMap.values());
+    GM_setValue("cachedRules", rulesArray);
+  } else {
+    // Gist 로드 실패 시 또는 미설정 시 기존 로컬 캐시 활용
+    const localCachedRules = GM_getValue("cachedRules", []);
+    const ruleMap = new Map();
+    localCachedRules.forEach(r => {
+      if (r && r.host) {
+        r.selectorList = deduplicateRuleList(r.selectorList);
+        r.displayNoneSelectorList = deduplicateRuleList(r.displayNoneSelectorList);
+        r.customStyleList = deduplicateRuleList(r.customStyleList);
+        r.shortcuts = deduplicateShortcutList(r.shortcuts);
+        ruleMap.set(r.host, r);
+      }
+    });
+    rulesArray = Array.from(ruleMap.values());
+    GM_setValue("cachedRules", rulesArray);
+  }
 
   const KOR_ENG_MAP = {
     'q': 'ㅂ', 'w': 'ㅈ', 'e': 'ㄷ', 'r': 'ㄱ', 't': 'ㅅ', 'y': 'ㅛ', 'u': 'ㅕ', 'i': 'ㅑ', 'o': 'ㅐ', 'p': 'ㅔ',
@@ -3992,28 +4028,7 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
     });
   }
 
-  function normalizeDomain(str) {
-    if (!str || typeof str !== 'string') return '';
-    return str.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').trim().toLowerCase();
-  }
 
-  function checkIsBlacklisted() {
-    try {
-      const cached = GM_getValue("cachedBlackList", []);
-      const currentHost = normalizeDomain(window.location.hostname || window.location.host || window.location.origin);
-      if (!currentHost) return false;
-
-      return cached.some(item => {
-        const normItem = normalizeDomain(item);
-        if (!normItem) return false;
-        if (normItem === currentHost) return true;
-        if (typeof isMatch === 'function' && isMatch(normItem, currentHost)) return true;
-        return false;
-      });
-    } catch (e) {
-      return false;
-    }
-  }
 
   const setupFloatingButton = () => {
     const isBlacklisted = checkIsBlacklisted();
