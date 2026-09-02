@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202609021655
+// @version      202609030740
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -974,7 +974,40 @@ function showGistConfigModal(onSaved) {
 
 function normalizeDomain(str) {
   if (!str || typeof str !== 'string') return '';
-  return str.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').trim().toLowerCase();
+  return str.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').replace(/:\d+$/, '').trim().toLowerCase();
+}
+
+function getBaseDomain(hostname) {
+  if (!hostname || typeof hostname !== 'string') return '';
+  let host = normalizeDomain(hostname);
+
+  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(host)) return host;
+  if (host.includes(':')) return host;
+
+  const parts = host.split('.');
+  if (parts.length <= 2) return host;
+
+  const twoLevelTlds = new Set([
+    'co.kr', 'ne.kr', 'or.kr', 're.kr', 'pe.kr', 'go.kr', 'mil.kr', 'ac.kr', 'hs.kr', 'ms.kr', 'es.kr', 'sc.kr', 'kg.kr',
+    'co.jp', 'ne.jp', 'or.jp', 'ac.jp', 'go.jp',
+    'co.uk', 'org.uk', 'me.uk', 'ltd.uk', 'plc.uk', 'net.uk',
+    'com.tw', 'org.tw', 'net.tw', 'idv.tw',
+    'com.cn', 'net.cn', 'org.cn', 'gov.cn',
+    'com.hk', 'org.hk', 'net.hk',
+    'com.sg', 'net.sg', 'org.sg',
+    'com.au', 'net.au', 'org.au',
+    'com.br', 'net.br', 'org.br'
+  ]);
+
+  const lastTwo = parts.slice(-2).join('.');
+  if (twoLevelTlds.has(lastTwo)) {
+    if (parts.length >= 3) {
+      return parts.slice(-3).join('.');
+    }
+    return host;
+  }
+
+  return parts.slice(-2).join('.');
 }
 
 function checkIsBlacklisted() {
@@ -995,7 +1028,7 @@ function checkIsBlacklisted() {
   }
 }
 
-function getImageBlurStorageKey() {
+function getImageBlurHost() {
   let host = "";
   try {
     if (window.top && window.top.location && window.top.location.hostname) {
@@ -1013,14 +1046,77 @@ function getImageBlurStorageKey() {
     host = window.location.hostname;
   }
   if (!host) host = "global";
+
+  const base = getBaseDomain(host);
+  if (base) {
+    host = base;
+  }
   if (typeof getWildcardDomain === "function") {
     host = getWildcardDomain(host);
   }
-  return "adblock_image_blur_enabled_" + host;
+  return host;
+}
+
+function getImageBlurStorageKey() {
+  return "adblock_image_blur_enabled_" + getImageBlurHost();
+}
+
+function updateImageBlurButtonUI(enabled) {
+  const blurBtn = document.getElementById("adblock-image-blur-btn");
+  if (blurBtn) {
+    blurBtn.textContent = enabled ? "🖼️ 이미지 블러 ON" : "🖼️ 이미지 블러 OFF";
+    blurBtn.style.backgroundColor = enabled ? "#22c55e" : "#eab308";
+    blurBtn.style.borderColor = enabled ? "#4ade80" : "#fde047";
+    blurBtn.style.color = "#09090b";
+  }
 }
 
 function isImageBlurEnabled() {
-  return GM_getValue(getImageBlurStorageKey(), true);
+  if (checkIsBlacklisted()) {
+    return false;
+  }
+
+  const currentHost = getImageBlurHost();
+  const rawHostname = (window.location && window.location.hostname) ? window.location.hostname : "";
+
+  // 1. Gist 동기화 캐시(cachedRules)에서 현재 도메인의 blur 상태 확인
+  try {
+    const cachedRules = GM_getValue("cachedRules", []);
+    if (Array.isArray(cachedRules)) {
+      const matchedRule = cachedRules.find(r => {
+        if (!r || !r.host) return false;
+        const normHost = normalizeDomain(r.host);
+        const normCurrent = normalizeDomain(currentHost);
+        const normRaw = normalizeDomain(rawHostname);
+        if (normHost === normCurrent || normHost === normRaw) return true;
+        if (typeof isMatch === 'function' && (isMatch(normHost, normCurrent) || isMatch(normHost, normRaw))) return true;
+        return false;
+      });
+
+      if (matchedRule && typeof matchedRule.imageBlurDisabled === "boolean") {
+        return !matchedRule.imageBlurDisabled;
+      }
+    }
+  } catch (e) {}
+
+  // 2. 통합 베이스 도메인 로컬 스토리지 확인
+  const baseKey = "adblock_image_blur_enabled_" + currentHost;
+  const baseVal = GM_getValue(baseKey, null);
+  if (baseVal !== null) {
+    return !!baseVal;
+  }
+
+  // 3. 이전 버전 호환성 (raw hostname 키)
+  if (rawHostname && rawHostname !== currentHost) {
+    const legacyKey = "adblock_image_blur_enabled_" + rawHostname;
+    const legacyVal = GM_getValue(legacyKey, null);
+    if (legacyVal !== null) {
+      return !!legacyVal;
+    }
+  }
+
+  // 4. 기본값: 활성화 (true)
+  return true;
 }
 
 function applyImageBlurStyle(enabled) {
@@ -1117,21 +1213,69 @@ function applyImageBlurStyle(enabled) {
 // 극초기 자동 실행
 applyImageBlurStyle(isImageBlurEnabled());
 
-window.__adblock_toggleImageBlur = function() {
+window.__adblock_toggleImageBlur = async function() {
   const nextState = !isImageBlurEnabled();
-  GM_setValue(getImageBlurStorageKey(), nextState);
+  const currentHost = getImageBlurHost();
+  const storageKey = getImageBlurStorageKey();
+
+  // 1. 로컬 스토리지 즉시 반영 & UI/스타일 갱신
+  GM_setValue(storageKey, nextState);
   applyImageBlurStyle(nextState);
-  
-  const blurBtn = document.getElementById("adblock-image-blur-btn");
-  if (blurBtn) {
-    blurBtn.textContent = nextState ? "🖼️ 이미지 블러 ON" : "🖼️ 이미지 블러 OFF";
-    blurBtn.style.backgroundColor = nextState ? "#22c55e" : "#eab308";
-    blurBtn.style.borderColor = nextState ? "#4ade80" : "#fde047";
-    blurBtn.style.color = "#09090b";
-  }
+  updateImageBlurButtonUI(nextState);
 
   if (typeof Toast !== "undefined" && Toast.show) {
     Toast.show(nextState ? "이미지 80% 블러 모드가 켜졌습니다. (Hover 시 원본 보기)" : "이미지 블러 모드가 꺼졌습니다.");
+  }
+
+  // 2. Gist 및 cachedRules에 imageBlurDisabled 동기화
+  try {
+    let rules = GM_getValue("cachedRules", []);
+    if (!Array.isArray(rules)) rules = [];
+
+    const normTarget = normalizeDomain(currentHost);
+    let targetRule = rules.find(r => {
+      if (!r || !r.host) return false;
+      const normHost = normalizeDomain(r.host);
+      return normHost === normTarget || (typeof isMatch === 'function' && isMatch(normHost, normTarget));
+    });
+
+    if (!targetRule) {
+      targetRule = {
+        host: currentHost,
+        selectorList: [],
+        displayNoneSelectorList: [],
+        customStyleList: [],
+        blockedUrlPatterns: [],
+        shortcuts: [],
+        imageBlurDisabled: !nextState
+      };
+      rules.push(targetRule);
+    } else {
+      targetRule.imageBlurDisabled = !nextState;
+    }
+
+    GM_setValue("cachedRules", rules);
+
+    if (typeof rulesArray !== "undefined" && Array.isArray(rulesArray)) {
+      const idx = rulesArray.findIndex(r => r && normalizeDomain(r.host) === normTarget);
+      if (idx >= 0) {
+        rulesArray[idx].imageBlurDisabled = !nextState;
+      } else {
+        rulesArray.push(targetRule);
+      }
+    }
+
+    const gistConfig = typeof getGistConfig === "function" ? getGistConfig() : null;
+    if (gistConfig && gistConfig.gistId && gistConfig.token && typeof useGist === "function") {
+      const { set } = useGist(
+        gistConfig.gistId,
+        gistConfig.token,
+        gistConfig.fileName || "ad_selector_list.json"
+      );
+      await set(rules);
+    }
+  } catch (err) {
+    console.error("[Adblocker] 이미지 블러 Gist 동기화 중 오류:", err);
   }
 };
 
@@ -2735,6 +2879,12 @@ function deduplicateShortcutList(list) {
     });
     rulesArray = Array.from(ruleMap.values());
     GM_setValue("cachedRules", rulesArray);
+
+    try {
+      const currentBlurState = isImageBlurEnabled();
+      applyImageBlurStyle(currentBlurState);
+      updateImageBlurButtonUI(currentBlurState);
+    } catch (e) {}
   } else {
     // Gist 로드 실패 시 또는 미설정 시 기존 로컬 캐시 활용
     const localCachedRules = GM_getValue("cachedRules", []);
