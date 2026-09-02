@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202609030800
+// @version      202609030825
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -377,31 +377,13 @@ function getGistConfig() {
     authFileName: "ad_selector_auth.json"
   };
 
-  let saved = GM_getValue("gist_config", null);
-
-  // GM 스토리지에 유효한 정보가 없으면 localStorage 백업에서 복구 시도
-  if (!saved || !saved.gistId || !saved.token) {
-    try {
-      const localBackupStr = localStorage.getItem("adblock_gist_config");
-      if (localBackupStr) {
-        const localBackup = JSON.parse(localBackupStr);
-        if (localBackup && (localBackup.gistId || localBackup.token)) {
-          saved = { ...(saved || {}), ...localBackup };
-          GM_setValue("gist_config", saved);
-        }
-      }
-    } catch (e) {}
-  }
-
+  const saved = GM_getValue("gist_config", null);
   if (!saved) return defaultConfig;
   return { ...defaultConfig, ...saved };
 }
 
 function setGistConfig(config) {
   GM_setValue("gist_config", config);
-  try {
-    localStorage.setItem("adblock_gist_config", JSON.stringify(config));
-  } catch (e) {}
 }
 
 /* ==========================================================================
@@ -413,40 +395,32 @@ function getAuthConfigs() {
     const data = GM_getValue("adblocker_auth_configs", null);
     if (data && typeof data === "object") return data;
   } catch (e) {}
-  try {
-    const raw = localStorage.getItem("adblocker_auth_configs");
-    if (raw) return JSON.parse(raw);
-  } catch (e) {}
   return {};
 }
 
 async function syncAuthConfigsToGist(configs) {
-  try {
-    const gistConfig = getGistConfig();
-    if (gistConfig && gistConfig.gistId && gistConfig.token && typeof useGist === "function") {
-      const { set } = useGist(
-        gistConfig.gistId,
-        gistConfig.token,
-        gistConfig.authFileName || "ad_selector_auth.json"
-      );
-      await set(configs);
-    }
-  } catch (err) {
-    console.error("[Adblocker] 로그인 설정 Gist 동기화 실패:", err);
+  const gistConfig = getGistConfig();
+  if (!gistConfig || !gistConfig.gistId || !gistConfig.token) {
+    throw new Error("Gist 설정(Gist ID 및 GitHub Token)이 없습니다.");
   }
+  if (typeof useGist !== "function") {
+    throw new Error("useGist 라이브러리를 찾을 수 없습니다.");
+  }
+  const { set } = useGist(
+    gistConfig.gistId,
+    gistConfig.token,
+    gistConfig.authFileName || "ad_selector_auth.json"
+  );
+  await set(configs);
 }
 
-function setAuthConfigs(configs, syncToGist = true) {
+async function setAuthConfigs(configs, syncToGist = true) {
+  if (syncToGist) {
+    await syncAuthConfigsToGist(configs);
+  }
   try {
     GM_setValue("adblocker_auth_configs", configs);
   } catch (e) {}
-  try {
-    localStorage.setItem("adblocker_auth_configs", JSON.stringify(configs));
-  } catch (e) {}
-
-  if (syncToGist) {
-    syncAuthConfigsToGist(configs);
-  }
 }
 
 function getAuthConfigForHost(hostname) {
@@ -671,42 +645,87 @@ function showAuthConfigModal() {
   document.getElementById("adblock-auth-pick-pw").onclick = () => startAuthConfigPicker("adblock-auth-pw-sel", modalContainer);
   document.getElementById("adblock-auth-pick-btn").onclick = () => startAuthConfigPicker("adblock-auth-btn-sel", modalContainer);
 
-  document.getElementById("adblock-auth-save-btn").onclick = () => {
-    const useWildcard = document.getElementById("adblock-auth-wildcard").checked;
-    const targetKey = useWildcard ? wildcardDomain : currentHost;
-    
-    const configData = {
-      hostPattern: targetKey,
-      idSelector: document.getElementById("adblock-auth-id-sel").value.trim(),
-      pwSelector: document.getElementById("adblock-auth-pw-sel").value.trim(),
-      btnSelector: document.getElementById("adblock-auth-btn-sel").value.trim(),
-      username: document.getElementById("adblock-auth-username").value,
-      password: document.getElementById("adblock-auth-password").value,
-      enabled: document.getElementById("adblock-auth-enabled").checked,
-      useWildcard: useWildcard
-    };
-
-    const configs = getAuthConfigs();
-    configs[targetKey] = configData;
-    setAuthConfigs(configs);
-
-    if (typeof Toast !== "undefined" && Toast.show) {
-      Toast.show(`🔑 [${targetKey}] 자동 로그인 설정 저장 및 Gist 동기화 완료`);
+  document.getElementById("adblock-auth-save-btn").onclick = async () => {
+    const gistConfig = getGistConfig();
+    if (!gistConfig.gistId || !gistConfig.token) {
+      if (typeof Toast !== "undefined" && Toast.show) {
+        Toast.show("⚠️ Gist 설정 정보가 없습니다. 먼저 Gist ID와 Token을 설정해주세요.");
+      }
+      showGistConfigModal();
+      return;
     }
-    modalContainer.remove();
-    initAutoLoginEngine();
+
+    const saveBtn = document.getElementById("adblock-auth-save-btn");
+    const originalText = saveBtn.innerText;
+    saveBtn.innerText = "⏳ Gist 저장 중...";
+    saveBtn.disabled = true;
+
+    try {
+      const useWildcard = document.getElementById("adblock-auth-wildcard").checked;
+      const targetKey = useWildcard ? wildcardDomain : currentHost;
+      
+      const configData = {
+        hostPattern: targetKey,
+        idSelector: document.getElementById("adblock-auth-id-sel").value.trim(),
+        pwSelector: document.getElementById("adblock-auth-pw-sel").value.trim(),
+        btnSelector: document.getElementById("adblock-auth-btn-sel").value.trim(),
+        username: document.getElementById("adblock-auth-username").value,
+        password: document.getElementById("adblock-auth-password").value,
+        enabled: document.getElementById("adblock-auth-enabled").checked,
+        useWildcard: useWildcard
+      };
+
+      const configs = getAuthConfigs();
+      configs[targetKey] = configData;
+      await setAuthConfigs(configs, true);
+
+      if (typeof Toast !== "undefined" && Toast.show) {
+        Toast.show(`🔑 [${targetKey}] Gist 동기화 및 저장 완료!`);
+      }
+      modalContainer.remove();
+      initAutoLoginEngine();
+    } catch (err) {
+      console.error("[Adblocker] 로그인 설정 저장/Gist 동기화 실패:", err);
+      saveBtn.innerText = originalText;
+      saveBtn.disabled = false;
+      if (typeof Toast !== "undefined" && Toast.show) {
+        Toast.show(`❌ Gist 동기화 실패: ${err.message || "오류 발생"}`);
+      }
+    }
   };
 
   const deleteBtn = document.getElementById("adblock-auth-delete-btn");
   if (deleteBtn && matched) {
-    deleteBtn.onclick = () => {
-      const configs = getAuthConfigs();
-      delete configs[matched.pattern];
-      setAuthConfigs(configs);
-      if (typeof Toast !== "undefined" && Toast.show) {
-        Toast.show(`🗑️ [${matched.pattern}] 설정을 삭제하고 Gist에 반영했습니다.`);
+    deleteBtn.onclick = async () => {
+      const gistConfig = getGistConfig();
+      if (!gistConfig.gistId || !gistConfig.token) {
+        if (typeof Toast !== "undefined" && Toast.show) {
+          Toast.show("⚠️ Gist 설정 정보가 없습니다. 먼저 Gist ID와 Token을 설정해주세요.");
+        }
+        showGistConfigModal();
+        return;
       }
-      modalContainer.remove();
+
+      const originalText = deleteBtn.innerText;
+      deleteBtn.innerText = "⏳ 삭제 중...";
+      deleteBtn.disabled = true;
+
+      try {
+        const configs = getAuthConfigs();
+        delete configs[matched.pattern];
+        await setAuthConfigs(configs, true);
+        if (typeof Toast !== "undefined" && Toast.show) {
+          Toast.show(`🗑️ [${matched.pattern}] 설정을 삭제하고 Gist에 반영했습니다.`);
+        }
+        modalContainer.remove();
+      } catch (err) {
+        console.error("[Adblocker] 로그인 설정 삭제 실패:", err);
+        deleteBtn.innerText = originalText;
+        deleteBtn.disabled = false;
+        if (typeof Toast !== "undefined" && Toast.show) {
+          Toast.show(`❌ Gist 삭제 실패: ${err.message || "오류 발생"}`);
+        }
+      }
     };
   }
 
@@ -730,15 +749,15 @@ function showAuthConfigModal() {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       try {
         const imported = JSON.parse(event.target.result);
         if (imported && typeof imported === 'object') {
           const current = getAuthConfigs();
           const merged = { ...current, ...imported };
-          setAuthConfigs(merged);
+          await setAuthConfigs(merged, true);
           if (typeof Toast !== "undefined" && Toast.show) {
-            Toast.show("📤 ad_selector_auth.json 설정을 불러왔습니다.");
+            Toast.show("📤 ad_selector_auth.json 설정을 불러와 Gist에 동기화했습니다.");
           }
           modalContainer.remove();
           showAuthConfigModal();
@@ -746,7 +765,7 @@ function showAuthConfigModal() {
         }
       } catch (err) {
         if (typeof Toast !== "undefined" && Toast.show) {
-          Toast.show("❌ JSON 파싱 실패: 올바른 형식의 파일이 아닙니다.");
+          Toast.show(`❌ 불러오기/동기화 실패: ${err.message || "JSON 파싱 에러"}`);
         }
       }
     };
@@ -2873,13 +2892,13 @@ async function main() {
       );
       const freshAuthConfigs = await authGist.get();
       if (freshAuthConfigs && typeof freshAuthConfigs === "object" && !Array.isArray(freshAuthConfigs)) {
-        setAuthConfigs(freshAuthConfigs, false);
+        await setAuthConfigs(freshAuthConfigs, false);
         if (typeof initAutoLoginEngine === "function") {
           initAutoLoginEngine();
         }
       }
     } catch (e) {
-      console.error("[Dynamic Ad Blocker] 로그인 설정 Gist 로드 실패:", e);
+      console.warn("[Dynamic Ad Blocker] 로그인 설정 Gist 로드 실패 (파일이 아직 없거나 통신 오류):", e.message || e);
     }
   }
 
