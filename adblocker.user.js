@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202608311114
+// @version      202609021655
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -71,6 +71,14 @@ function registerTampermonkeyMenuCommands(isBlacklisted = false) {
           window.__adblock_openGistConfig();
         } else if (typeof showGistConfigModal === "function") {
           showGistConfigModal();
+        }
+      });
+
+      GM_registerMenuCommand("🔑 로그인 설정", () => {
+        if (typeof showAuthConfigModal === "function") {
+          showAuthConfigModal();
+        } else {
+          if (typeof Toast !== "undefined" && Toast.show) Toast.show("로그인 설정 모달을 열 수 없습니다.");
         }
       });
 
@@ -395,6 +403,470 @@ function setGistConfig(config) {
   } catch (e) {}
 }
 
+/* ==========================================================================
+   🔑 자동 로그인 & 넘버링 도메인 헬스체크 모듈
+   ========================================================================== */
+
+function getAuthConfigs() {
+  try {
+    const data = GM_getValue("adblocker_auth_configs", null);
+    if (data && typeof data === "object") return data;
+  } catch (e) {}
+  try {
+    const raw = localStorage.getItem("adblocker_auth_configs");
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return {};
+}
+
+function setAuthConfigs(configs) {
+  try {
+    GM_setValue("adblocker_auth_configs", configs);
+  } catch (e) {}
+  try {
+    localStorage.setItem("adblocker_auth_configs", JSON.stringify(configs));
+  } catch (e) {}
+}
+
+function getAuthConfigForHost(hostname) {
+  const configs = getAuthConfigs();
+  const host = hostname || window.location.hostname;
+  
+  if (configs[host]) return { pattern: host, config: configs[host] };
+  
+  for (const pattern of Object.keys(configs)) {
+    if (pattern.includes("*")) {
+      if (isMatch(pattern, host)) {
+        return { pattern, config: configs[pattern] };
+      }
+    }
+  }
+  return null;
+}
+
+function startAuthConfigPicker(targetInputId, modalContainer) {
+  if (typeof Toast !== "undefined" && Toast.show) {
+    Toast.show("🎯 요소를 클릭하면 선택자가 자동 입력됩니다. (ESC로 취소)");
+  }
+  
+  if (modalContainer) modalContainer.style.display = "none";
+  
+  let overlay = document.getElementById("adblock-auth-picker-overlay");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "adblock-auth-picker-overlay";
+    overlay.style.cssText = `
+      position: fixed;
+      pointer-events: none;
+      z-index: 2147483646;
+      border: 2px dashed #06b6d4;
+      background: rgba(6, 182, 212, 0.15);
+      box-shadow: 0 0 10px rgba(6, 182, 212, 0.5);
+      transition: all 0.05s ease;
+      display: none;
+    `;
+    (document.body || document.documentElement).appendChild(overlay);
+  }
+
+  const prevCursor = document.body ? document.body.style.cursor : '';
+  if (document.body) document.body.style.cursor = 'crosshair';
+
+  function onMouseMove(e) {
+    const target = e.target;
+    if (!target || target === overlay || target.closest('#adblock-ui-group') || target.closest('#adblock-auth-modal')) {
+      overlay.style.display = "none";
+      return;
+    }
+    const rect = target.getBoundingClientRect();
+    overlay.style.left = `${rect.left + window.scrollX}px`;
+    overlay.style.top = `${rect.top + window.scrollY}px`;
+    overlay.style.width = `${rect.width}px`;
+    overlay.style.height = `${rect.height}px`;
+    overlay.style.display = "block";
+  }
+
+  function onClick(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const target = e.target;
+    cleanup();
+    
+    if (target && target !== overlay && !target.closest('#adblock-ui-group') && !target.closest('#adblock-auth-modal')) {
+      const sel = getUniqueSelector(target);
+      const inputEl = document.getElementById(targetInputId);
+      if (inputEl) {
+        inputEl.value = sel;
+        if (typeof Toast !== "undefined" && Toast.show) {
+          Toast.show(`🎯 선택자 추출 완료: ${sel}`);
+        }
+      }
+    }
+    if (modalContainer) modalContainer.style.display = "block";
+  }
+
+  function onKeyDown(e) {
+    if (e.key === "Escape") {
+      cleanup();
+      if (modalContainer) modalContainer.style.display = "block";
+      if (typeof Toast !== "undefined" && Toast.show) Toast.show("선택 지정을 취소했습니다.");
+    }
+  }
+
+  function cleanup() {
+    window.removeEventListener("mousemove", onMouseMove, true);
+    window.removeEventListener("click", onClick, true);
+    window.removeEventListener("keydown", onKeyDown, true);
+    if (overlay) overlay.style.display = "none";
+    if (document.body) document.body.style.cursor = prevCursor;
+  }
+
+  window.addEventListener("mousemove", onMouseMove, true);
+  window.addEventListener("click", onClick, true);
+  window.addEventListener("keydown", onKeyDown, true);
+}
+
+function showAuthConfigModal() {
+  const existing = document.getElementById("adblock-auth-modal");
+  if (existing) existing.remove();
+
+  const currentHost = window.location.hostname;
+  const wildcardDomain = getWildcardDomain(currentHost);
+  const isNumeric = hasNumericDomain(currentHost);
+
+  const matched = getAuthConfigForHost(currentHost);
+  const initialConfig = matched ? matched.config : {
+    idSelector: "#id, #login_id, input[name='id'], input[name='username']",
+    pwSelector: "#pw, #login_pw, input[name='pw'], input[type='password']",
+    btnSelector: "#btn_login, button[type='submit'], .btn_login",
+    username: "",
+    password: "",
+    enabled: true,
+    useWildcard: isNumeric
+  };
+
+  const modalContainer = document.createElement("div");
+  modalContainer.id = "adblock-auth-modal";
+  modalContainer.style.cssText = `
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 1000005;
+    width: 460px;
+    max-width: calc(100vw - 32px);
+    background: #18181b;
+    color: #f4f4f5;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.7);
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    padding: 20px;
+    box-sizing: border-box;
+  `;
+
+  modalContainer.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); padding-bottom: 10px;">
+      <h3 style="margin: 0; font-size: 16px; font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 6px;">
+        🔑 자동 로그인 설정
+      </h3>
+      <button id="adblock-auth-close-btn" style="background: none; border: none; color: #a1a1aa; font-size: 18px; cursor: pointer; padding: 2px 6px; border-radius: 4px;">✕</button>
+    </div>
+
+    <div style="margin-bottom: 12px; font-size: 12px; color: #a1a1aa; line-height: 1.4;">
+      현재 도메인: <strong style="color: #f4f4f5;">${currentHost}</strong>
+    </div>
+
+    <div style="margin-bottom: 14px;">
+      <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: #fbbf24;">
+        <input type="checkbox" id="adblock-auth-wildcard" ${initialConfig.useWildcard ? 'checked' : ''} style="accent-color: #f59e0b; width: 15px; height: 15px;" />
+        와일드카드 넘버링 도메인 적용 <span style="font-family: monospace; font-size: 11px; opacity: 0.9;">(${wildcardDomain})</span>
+      </label>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px;">
+      <div>
+        <label style="display: block; margin-bottom: 4px; font-weight: 600; color: #e4e4e7;">아이디 (ID) Selector</label>
+        <div style="display: flex; gap: 6px;">
+          <input type="text" id="adblock-auth-id-sel" value="${initialConfig.idSelector || ''}" placeholder="예: #login_id" style="flex: 1; background: #27272a; border: 1px solid #3f3f46; color: #fff; border-radius: 6px; padding: 6px 10px; font-family: monospace; font-size: 12px;" />
+          <button type="button" id="adblock-auth-pick-id" style="background: #0284c7; color: white; border: none; border-radius: 6px; padding: 0 10px; cursor: pointer; font-size: 12px;">🎯 선택</button>
+        </div>
+      </div>
+
+      <div>
+        <label style="display: block; margin-bottom: 4px; font-weight: 600; color: #e4e4e7;">비밀번호 (PW) Selector</label>
+        <div style="display: flex; gap: 6px;">
+          <input type="text" id="adblock-auth-pw-sel" value="${initialConfig.pwSelector || ''}" placeholder="예: #login_pw" style="flex: 1; background: #27272a; border: 1px solid #3f3f46; color: #fff; border-radius: 6px; padding: 6px 10px; font-family: monospace; font-size: 12px;" />
+          <button type="button" id="adblock-auth-pick-pw" style="background: #0284c7; color: white; border: none; border-radius: 6px; padding: 0 10px; cursor: pointer; font-size: 12px;">🎯 선택</button>
+        </div>
+      </div>
+
+      <div>
+        <label style="display: block; margin-bottom: 4px; font-weight: 600; color: #e4e4e7;">로그인 버튼 Selector</label>
+        <div style="display: flex; gap: 6px;">
+          <input type="text" id="adblock-auth-btn-sel" value="${initialConfig.btnSelector || ''}" placeholder="예: #btn_login" style="flex: 1; background: #27272a; border: 1px solid #3f3f46; color: #fff; border-radius: 6px; padding: 6px 10px; font-family: monospace; font-size: 12px;" />
+          <button type="button" id="adblock-auth-pick-btn" style="background: #0284c7; color: white; border: none; border-radius: 6px; padding: 0 10px; cursor: pointer; font-size: 12px;">🎯 선택</button>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px;">
+        <div>
+          <label style="display: block; margin-bottom: 4px; font-weight: 600; color: #e4e4e7;">저장할 아이디 (ID)</label>
+          <input type="text" id="adblock-auth-username" value="${initialConfig.username || ''}" placeholder="아이디 입력" style="width: 100%; background: #27272a; border: 1px solid #3f3f46; color: #fff; border-radius: 6px; padding: 6px 10px; box-sizing: border-box;" />
+        </div>
+        <div>
+          <label style="display: block; margin-bottom: 4px; font-weight: 600; color: #e4e4e7;">저장할 비밀번호 (PW)</label>
+          <input type="password" id="adblock-auth-password" value="${initialConfig.password || ''}" placeholder="비밀번호 입력" style="width: 100%; background: #27272a; border: 1px solid #3f3f46; color: #fff; border-radius: 6px; padding: 6px 10px; box-sizing: border-box;" />
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-bottom: 16px;">
+      <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+        <input type="checkbox" id="adblock-auth-enabled" ${initialConfig.enabled !== false ? 'checked' : ''} style="accent-color: #06b6d4; width: 15px; height: 15px;" />
+        자동 로그인 기능 활성화
+      </label>
+    </div>
+
+    <div style="display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; border-top: 1px solid rgba(255, 255, 255, 0.1); padding-top: 14px;">
+      <div style="display: flex; gap: 6px;">
+        <button id="adblock-auth-export-btn" style="background: #374151; color: #e5e7eb; border: 1px solid #4b5563; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px;">📥 JSON 내보내기</button>
+        <button id="adblock-auth-import-btn" style="background: #374151; color: #e5e7eb; border: 1px solid #4b5563; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px;">📤 불러오기</button>
+        <input type="file" id="adblock-auth-file-input" accept=".json" style="display: none;" />
+      </div>
+      <div style="display: flex; gap: 6px;">
+        ${matched ? `<button id="adblock-auth-delete-btn" style="background: #ef4444; color: white; border: none; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px;">🗑️ 삭제</button>` : ''}
+        <button id="adblock-auth-save-btn" style="background: #06b6d4; color: white; border: none; border-radius: 6px; padding: 6px 14px; font-weight: 600; cursor: pointer; font-size: 12px;">💾 저장</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modalContainer);
+
+  document.getElementById("adblock-auth-close-btn").onclick = () => modalContainer.remove();
+  
+  document.getElementById("adblock-auth-pick-id").onclick = () => startAuthConfigPicker("adblock-auth-id-sel", modalContainer);
+  document.getElementById("adblock-auth-pick-pw").onclick = () => startAuthConfigPicker("adblock-auth-pw-sel", modalContainer);
+  document.getElementById("adblock-auth-pick-btn").onclick = () => startAuthConfigPicker("adblock-auth-btn-sel", modalContainer);
+
+  document.getElementById("adblock-auth-save-btn").onclick = () => {
+    const useWildcard = document.getElementById("adblock-auth-wildcard").checked;
+    const targetKey = useWildcard ? wildcardDomain : currentHost;
+    
+    const configData = {
+      hostPattern: targetKey,
+      idSelector: document.getElementById("adblock-auth-id-sel").value.trim(),
+      pwSelector: document.getElementById("adblock-auth-pw-sel").value.trim(),
+      btnSelector: document.getElementById("adblock-auth-btn-sel").value.trim(),
+      username: document.getElementById("adblock-auth-username").value,
+      password: document.getElementById("adblock-auth-password").value,
+      enabled: document.getElementById("adblock-auth-enabled").checked,
+      useWildcard: useWildcard
+    };
+
+    const configs = getAuthConfigs();
+    configs[targetKey] = configData;
+    setAuthConfigs(configs);
+
+    if (typeof Toast !== "undefined" && Toast.show) {
+      Toast.show(`🔑 [${targetKey}] 자동 로그인 설정이 저장되었습니다.`);
+    }
+    modalContainer.remove();
+    initAutoLoginEngine();
+  };
+
+  const deleteBtn = document.getElementById("adblock-auth-delete-btn");
+  if (deleteBtn && matched) {
+    deleteBtn.onclick = () => {
+      const configs = getAuthConfigs();
+      delete configs[matched.pattern];
+      setAuthConfigs(configs);
+      if (typeof Toast !== "undefined" && Toast.show) {
+        Toast.show(`🗑️ [${matched.pattern}] 설정을 삭제했습니다.`);
+      }
+      modalContainer.remove();
+    };
+  }
+
+  document.getElementById("adblock-auth-export-btn").onclick = () => {
+    const configs = getAuthConfigs();
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(configs, null, 2));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute("href", dataStr);
+    downloadAnchor.setAttribute("download", "ad_selector_auth.json");
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+    if (typeof Toast !== "undefined" && Toast.show) {
+      Toast.show("📥 ad_selector_auth.json 다운로드 완료");
+    }
+  };
+
+  const fileInput = document.getElementById("adblock-auth-file-input");
+  document.getElementById("adblock-auth-import-btn").onclick = () => fileInput.click();
+  fileInput.onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const imported = JSON.parse(event.target.result);
+        if (imported && typeof imported === 'object') {
+          const current = getAuthConfigs();
+          const merged = { ...current, ...imported };
+          setAuthConfigs(merged);
+          if (typeof Toast !== "undefined" && Toast.show) {
+            Toast.show("📤 ad_selector_auth.json 설정을 불러왔습니다.");
+          }
+          modalContainer.remove();
+          showAuthConfigModal();
+          initAutoLoginEngine();
+        }
+      } catch (err) {
+        if (typeof Toast !== "undefined" && Toast.show) {
+          Toast.show("❌ JSON 파싱 실패: 올바른 형식의 파일이 아닙니다.");
+        }
+      }
+    };
+    reader.readAsText(file);
+  };
+}
+
+function initAutoLoginEngine() {
+  if (window.__adblock_auth_done) return;
+
+  const currentHost = window.location.hostname;
+  const matched = getAuthConfigForHost(currentHost);
+  if (!matched || !matched.config || matched.config.enabled === false) return;
+
+  const cfg = matched.config;
+  if (!cfg.idSelector && !cfg.pwSelector && !cfg.btnSelector) return;
+
+  function attemptFillAndLogin() {
+    if (window.__adblock_auth_done) return true;
+
+    const idEl = cfg.idSelector ? document.querySelector(cfg.idSelector) : null;
+    const pwEl = cfg.pwSelector ? document.querySelector(cfg.pwSelector) : null;
+    const btnEl = cfg.btnSelector ? document.querySelector(cfg.btnSelector) : null;
+
+    let filled = false;
+
+    if (idEl && cfg.username && idEl.value !== cfg.username) {
+      idEl.value = cfg.username;
+      idEl.dispatchEvent(new Event('input', { bubbles: true }));
+      idEl.dispatchEvent(new Event('change', { bubbles: true }));
+      idEl.dispatchEvent(new Event('blur', { bubbles: true }));
+      filled = true;
+    }
+
+    if (pwEl && cfg.password && pwEl.value !== cfg.password) {
+      pwEl.value = cfg.password;
+      pwEl.dispatchEvent(new Event('input', { bubbles: true }));
+      pwEl.dispatchEvent(new Event('change', { bubbles: true }));
+      pwEl.dispatchEvent(new Event('blur', { bubbles: true }));
+      filled = true;
+    }
+
+    if (btnEl && (filled || (idEl && idEl.value) || (pwEl && pwEl.value))) {
+      window.__adblock_auth_done = true;
+      if (typeof Toast !== "undefined" && Toast.show) {
+        Toast.show("🔑 자동 로그인을 실행합니다...");
+      }
+      setTimeout(() => {
+        try {
+          btnEl.click();
+        } catch (e) {
+          if (btnEl.form) btnEl.form.submit();
+        }
+      }, 300);
+      return true;
+    }
+    return false;
+  }
+
+  if (document.readyState === "complete" || document.readyState === "interactive") {
+    attemptFillAndLogin();
+  } else {
+    document.addEventListener("DOMContentLoaded", attemptFillAndLogin);
+  }
+
+  const observer = new MutationObserver(() => {
+    if (attemptFillAndLogin()) {
+      observer.disconnect();
+    }
+  });
+
+  try {
+    observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
+  } catch (e) {}
+
+  setTimeout(attemptFillAndLogin, 1000);
+  setTimeout(attemptFillAndLogin, 2500);
+  setTimeout(attemptFillAndLogin, 5000);
+}
+
+function initDomainHealthCheck() {
+  const currentHost = window.location.hostname;
+  if (!hasNumericDomain(currentHost)) return;
+  if (window.__adblock_healthcheck_active) return;
+  window.__adblock_healthcheck_active = true;
+
+  let failCount = 0;
+
+  function getNextNumberedDomain(host) {
+    return host.replace(/(\d+)/, (match, p1) => {
+      const num = parseInt(p1, 10);
+      return (num + 1).toString();
+    });
+  }
+
+  function checkHealth() {
+    fetch(window.location.origin + '/', { method: 'HEAD', cache: 'no-store' })
+      .then(res => {
+        if (res.ok || res.status < 500) {
+          failCount = 0;
+        } else {
+          failCount++;
+        }
+      })
+      .catch(() => {
+        failCount++;
+        if (failCount >= 2) {
+          const nextHost = getNextNumberedDomain(currentHost);
+          if (nextHost && nextHost !== currentHost) {
+            const nextOrigin = `${window.location.protocol}//${nextHost}`;
+            fetch(nextOrigin + '/', { method: 'HEAD', mode: 'no-cors' })
+              .then(() => {
+                if (typeof Toast !== "undefined" && Toast.show) {
+                  Toast.show(`⚠️ 현재 도메인이 응답하지 않아 최신 도메인(${nextHost})으로 이동합니다.`);
+                }
+                setTimeout(() => {
+                  const targetUrl = window.location.href.replace(currentHost, nextHost);
+                  window.location.replace(targetUrl);
+                }, 1200);
+              })
+              .catch(() => {});
+          }
+        }
+      });
+  }
+
+  setInterval(checkHealth, 15000);
+}
+
+if (typeof document !== "undefined") {
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => {
+      initAutoLoginEngine();
+      initDomainHealthCheck();
+    });
+  } else {
+    initAutoLoginEngine();
+    initDomainHealthCheck();
+  }
+}
+
 function showGistConfigModal(onSaved) {
   const existing = document.getElementById("adblock-gist-modal");
   if (existing) existing.remove();
@@ -541,6 +1013,9 @@ function getImageBlurStorageKey() {
     host = window.location.hostname;
   }
   if (!host) host = "global";
+  if (typeof getWildcardDomain === "function") {
+    host = getWildcardDomain(host);
+  }
   return "adblock_image_blur_enabled_" + host;
 }
 
@@ -954,11 +1429,32 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
     imageBlurBtn.element.style.borderColor = isBlurActive ? '#4ade80' : '#fde047';
   }
 
+  const authConfigBtn = new Button({
+    text: "🔑 로그인설정",
+    variant: "primary",
+    size: "small",
+    onClick: () => {
+      if (typeof showAuthConfigModal === "function") {
+        showAuthConfigModal();
+      } else {
+        if (typeof Toast !== "undefined" && Toast.show) Toast.show("로그인 설정 모달을 열 수 없습니다.");
+      }
+    },
+  });
+  if (authConfigBtn && authConfigBtn.element) {
+    authConfigBtn.element.style.setProperty("background-color", "#06b6d4", "important");
+    authConfigBtn.element.style.setProperty("background", "linear-gradient(135deg, #06b6d4 0%, #0891b2 100%)", "important");
+    authConfigBtn.element.style.setProperty("color", "#ffffff", "important");
+    authConfigBtn.element.style.setProperty("font-weight", "600", "important");
+    authConfigBtn.element.style.setProperty("border-color", "#0891b2", "important");
+  }
+
   pickerCoverBtn.appendTo(menuWrapper);
   pickerHideBtn.appendTo(menuWrapper);
   urlBlockBtn.appendTo(menuWrapper);
   styleInjectBtn.appendTo(menuWrapper);
   shortcutBtn.appendTo(menuWrapper);
+  authConfigBtn.appendTo(menuWrapper);
   imageBlurBtn.appendTo(menuWrapper);
   deleteListBtn.appendTo(menuWrapper);
   blacklistBtn.appendTo(menuWrapper);
