@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202609030740
+// @version      202609030800
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -373,7 +373,8 @@ function getGistConfig() {
     gistId: "",
     token: "",
     fileName: "ad_selector_list.json",
-    blackListFileName: "ad_selector_blacklist.json"
+    blackListFileName: "ad_selector_blacklist.json",
+    authFileName: "ad_selector_auth.json"
   };
 
   let saved = GM_getValue("gist_config", null);
@@ -419,13 +420,33 @@ function getAuthConfigs() {
   return {};
 }
 
-function setAuthConfigs(configs) {
+async function syncAuthConfigsToGist(configs) {
+  try {
+    const gistConfig = getGistConfig();
+    if (gistConfig && gistConfig.gistId && gistConfig.token && typeof useGist === "function") {
+      const { set } = useGist(
+        gistConfig.gistId,
+        gistConfig.token,
+        gistConfig.authFileName || "ad_selector_auth.json"
+      );
+      await set(configs);
+    }
+  } catch (err) {
+    console.error("[Adblocker] 로그인 설정 Gist 동기화 실패:", err);
+  }
+}
+
+function setAuthConfigs(configs, syncToGist = true) {
   try {
     GM_setValue("adblocker_auth_configs", configs);
   } catch (e) {}
   try {
     localStorage.setItem("adblocker_auth_configs", JSON.stringify(configs));
   } catch (e) {}
+
+  if (syncToGist) {
+    syncAuthConfigsToGist(configs);
+  }
 }
 
 function getAuthConfigForHost(hostname) {
@@ -670,7 +691,7 @@ function showAuthConfigModal() {
     setAuthConfigs(configs);
 
     if (typeof Toast !== "undefined" && Toast.show) {
-      Toast.show(`🔑 [${targetKey}] 자동 로그인 설정이 저장되었습니다.`);
+      Toast.show(`🔑 [${targetKey}] 자동 로그인 설정 저장 및 Gist 동기화 완료`);
     }
     modalContainer.remove();
     initAutoLoginEngine();
@@ -683,7 +704,7 @@ function showAuthConfigModal() {
       delete configs[matched.pattern];
       setAuthConfigs(configs);
       if (typeof Toast !== "undefined" && Toast.show) {
-        Toast.show(`🗑️ [${matched.pattern}] 설정을 삭제했습니다.`);
+        Toast.show(`🗑️ [${matched.pattern}] 설정을 삭제하고 Gist에 반영했습니다.`);
       }
       modalContainer.remove();
     };
@@ -919,6 +940,10 @@ function showGistConfigModal(onSaved) {
         <label style="display: block; color: #a1a1aa; font-size: 12px; margin-bottom: 4px; font-weight: 500;">블랙리스트 파일명:</label>
         <input type="text" id="adblock-gist-blacklist-file-input" placeholder="ad_selector_blacklist.json" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none;" value="${currentConfig.blackListFileName || 'ad_selector_blacklist.json'}" />
       </div>
+      <div>
+        <label style="display: block; color: #a1a1aa; font-size: 12px; margin-bottom: 4px; font-weight: 500;">로그인설정 파일명:</label>
+        <input type="text" id="adblock-gist-auth-file-input" placeholder="ad_selector_auth.json" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none;" value="${currentConfig.authFileName || 'ad_selector_auth.json'}" />
+      </div>
       <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
         <button id="adblock-gist-open-url" style="padding: 6px 12px; background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 500;">🔗 Gist 바로가기</button>
         <div style="display: flex; gap: 8px;">
@@ -950,6 +975,7 @@ function showGistConfigModal(onSaved) {
     const token = modalContainer.querySelector("#adblock-gist-token-input").value.trim();
     const fileName = modalContainer.querySelector("#adblock-gist-file-input").value.trim() || "ad_selector_list.json";
     const blackListFileName = modalContainer.querySelector("#adblock-gist-blacklist-file-input").value.trim() || "ad_selector_blacklist.json";
+    const authFileName = modalContainer.querySelector("#adblock-gist-auth-file-input").value.trim() || "ad_selector_auth.json";
 
     if (!gistId || !token) {
       alert("Gist ID와 GitHub Token은 필수 입력 항목입니다.");
@@ -960,7 +986,8 @@ function showGistConfigModal(onSaved) {
       gistId,
       token,
       fileName,
-      blackListFileName
+      blackListFileName,
+      authFileName
     });
 
     close();
@@ -2833,6 +2860,26 @@ async function main() {
       }
     } catch (e) {
       console.error("[Dynamic Ad Blocker] 블랙리스트 로드 실패:", e);
+    }
+  }
+
+  // 로그인 설정 Gist 로드 (Single Source of Truth: 원격 데이터를 우선으로 로컬 캐시를 덮어씀)
+  if (gistConfig.gistId && gistConfig.token) {
+    try {
+      const authGist = useGist(
+        gistConfig.gistId,
+        gistConfig.token,
+        gistConfig.authFileName || "ad_selector_auth.json"
+      );
+      const freshAuthConfigs = await authGist.get();
+      if (freshAuthConfigs && typeof freshAuthConfigs === "object" && !Array.isArray(freshAuthConfigs)) {
+        setAuthConfigs(freshAuthConfigs, false);
+        if (typeof initAutoLoginEngine === "function") {
+          initAutoLoginEngine();
+        }
+      }
+    } catch (e) {
+      console.error("[Dynamic Ad Blocker] 로그인 설정 Gist 로드 실패:", e);
     }
   }
 
