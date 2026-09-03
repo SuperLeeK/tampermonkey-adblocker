@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202609031500
+// @version      202609031730
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -932,6 +932,12 @@ function showAuthConfigModal() {
       if (typeof Toast !== "undefined" && Toast.show) {
         Toast.show(`🔑 [${targetKey}] Gist 동기화 및 저장 완료!`);
       }
+      try {
+        sessionStorage.removeItem(`__adblock_auth_attempts_${currentHost}`);
+        sessionStorage.removeItem(`__adblock_auth_attempts_${targetKey}`);
+      } catch (e) {}
+      window.__adblock_auth_done = false;
+      window.__adblock_auth_warned = false;
       modalContainer.remove();
       initAutoLoginEngine();
     } catch (err) {
@@ -1033,6 +1039,46 @@ function initAutoLoginEngine() {
   const cfg = matched.config;
   if (!cfg.idSelector && !cfg.pwSelector && !cfg.btnSelector) return;
 
+  const ATTEMPT_KEY = `__adblock_auth_attempts_${currentHost}`;
+  const MAX_ATTEMPTS = 3;
+  const COOLDOWN_MS = 60 * 1000;
+
+  function getAttemptInfo() {
+    try {
+      const raw = sessionStorage.getItem(ATTEMPT_KEY);
+      if (!raw) return { count: 0, timestamp: 0 };
+      const parsed = JSON.parse(raw);
+      if (Date.now() - (parsed.timestamp || 0) > COOLDOWN_MS) {
+        sessionStorage.removeItem(ATTEMPT_KEY);
+        return { count: 0, timestamp: 0 };
+      }
+      return parsed;
+    } catch (e) {
+      return { count: 0, timestamp: 0 };
+    }
+  }
+
+  function recordAttempt(count) {
+    try {
+      sessionStorage.setItem(ATTEMPT_KEY, JSON.stringify({
+        count: count,
+        timestamp: Date.now()
+      }));
+    } catch (e) {}
+  }
+
+  const attemptInfo = getAttemptInfo();
+  if (attemptInfo.count >= MAX_ATTEMPTS) {
+    if (!window.__adblock_auth_warned) {
+      window.__adblock_auth_warned = true;
+      if (typeof Toast !== "undefined" && Toast.show) {
+        Toast.show(`⚠️ 자동 로그인이 연속으로 실패하여 중단되었습니다. (최대 ${MAX_ATTEMPTS}회 초과)`);
+      }
+      console.warn(`[Adblocker] ${currentHost} 자동 로그인이 연속 ${attemptInfo.count}회 실패하여 중단되었습니다.`);
+    }
+    return;
+  }
+
   function attemptFillAndLogin() {
     if (window.__adblock_auth_done) return true;
 
@@ -1060,8 +1106,11 @@ function initAutoLoginEngine() {
 
     if (btnEl && (filled || (idEl && idEl.value) || (pwEl && pwEl.value))) {
       window.__adblock_auth_done = true;
+      const currentAttempt = attemptInfo.count + 1;
+      recordAttempt(currentAttempt);
+
       if (typeof Toast !== "undefined" && Toast.show) {
-        Toast.show("🔑 자동 로그인을 실행합니다...");
+        Toast.show(`🔑 자동 로그인을 실행합니다... (${currentAttempt}/${MAX_ATTEMPTS})`);
       }
       setTimeout(() => {
         try {
@@ -1735,7 +1784,7 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
   });
 
   const pickerCoverBtn = new Button({
-    text: "선택자(흰색덮기)",
+    text: "선택자(색상덮기)",
     variant: "success",
     size: "small",
     onClick: handlePickerCoverClick || (() => Toast.show("블랙리스트에 등록된 사이트에서는 사용할 수 없습니다.")),
@@ -2015,11 +2064,13 @@ function getWildcardDomain(domainOrUrl) {
       const url = new URL(domainOrUrl);
       const cleanHost = url.hostname.replace(/^www\./, "");
       const wildcardHost = cleanHost.replace(/\d+/g, "*");
-      return `${url.protocol}//${wildcardHost}`;
+      return `${url.protocol}//${wildcardHost}${url.port ? ':' + url.port : ''}`;
     }
   } catch (e) {}
   const clean = domainOrUrl.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");
-  return clean.replace(/\d+/g, "*");
+  const parts = clean.split(':');
+  const hostPart = parts[0].replace(/\d+/g, "*");
+  return parts.length > 1 ? `${hostPart}:${parts[1]}` : hostPart;
 }
 
 function hasNumericDomain(domainOrUrl) {
@@ -2030,7 +2081,9 @@ function hasNumericDomain(domainOrUrl) {
       return /\d+/.test(url.hostname);
     }
   } catch (e) {}
-  return /\d+/.test(domainOrUrl);
+  const clean = domainOrUrl.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");
+  const hostOnly = clean.split(':')[0];
+  return /\d+/.test(hostOnly);
 }
 
 function getUniqueSelector(el) {
@@ -2666,21 +2719,34 @@ function formatShortDate(timestampOrIso) {
 }
 
 function applyAdblockRulesSync(coverSelectors = [], displayNoneSelectors = [], customStyleList = []) {
-  coverSelectors = extractStringSelectors(coverSelectors);
-  displayNoneSelectors = extractStringSelectors(displayNoneSelectors);
+  const colorCoverMap = {};
 
-  // 일반 선택자와 :has-text() 같은 확장 선택자를 분리
-  const stdCover = coverSelectors.filter(s => !isExtendedSelector(s));
-  const stdHide = displayNoneSelectors.filter(s => !isExtendedSelector(s));
+  if (Array.isArray(coverSelectors)) {
+    coverSelectors.forEach(item => {
+      if (!item) return;
+      let sel = typeof item === 'string' ? item : item.selector;
+      let col = (typeof item === 'object' && item.color) ? item.color : '#ffffff';
+      if (!sel) return;
+      sel = normalizeWildcardSelector(sel.trim());
+      if (isExtendedSelector(sel)) return;
+      if (!colorCoverMap[col]) colorCoverMap[col] = [];
+      colorCoverMap[col].push(sel);
+    });
+  }
+
+  const cleanHide = extractStringSelectors(displayNoneSelectors);
+  const stdHide = cleanHide.filter(s => !isExtendedSelector(s));
 
   let cssString = "";
 
-  if (stdCover && stdCover.length > 0) {
-    const baseRules = stdCover.join(", ") + " { position: relative !important; overflow: hidden !important; }";
-    const overlayRules = stdCover.map(s => `${s}::after`).join(", ") + 
-      " { content: '' !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; background-color: white !important; z-index: 99999 !important; pointer-events: auto !important; }";
-    cssString += `${baseRules}\n${overlayRules}\n`;
-  }
+  Object.entries(colorCoverMap).forEach(([color, sels]) => {
+    if (sels.length > 0) {
+      const baseRules = sels.join(", ") + ` { position: relative !important; overflow: hidden !important; background-color: ${color} !important; color: transparent !important; }`;
+      const overlayRules = sels.map(s => `${s}::after`).join(", ") + 
+        ` { content: '' !important; display: block !important; position: absolute !important; inset: 0 !important; width: 100% !important; height: 100% !important; background-color: ${color} !important; z-index: 99999 !important; pointer-events: auto !important; }`;
+      cssString += `${baseRules}\n${overlayRules}\n`;
+    }
+  });
 
   if (stdHide && stdHide.length > 0) {
     const hideRules = stdHide.join(", ") + " { display: none !important; }";
@@ -2701,27 +2767,32 @@ function applyAdblockRulesSync(coverSelectors = [], displayNoneSelectors = [], c
     });
   }
 
-  if (adblockStyleElement) {
+  if (adblockStyleElement && adblockStyleElement.isConnected) {
     adblockStyleElement.textContent = cssString;
   } else if (cssString) {
-    adblockStyleElement = document.createElement("style");
-    adblockStyleElement.type = "text/css";
-    adblockStyleElement.id = "dynamic-ad-blocker-style";
-    adblockStyleElement.appendChild(document.createTextNode(cssString));
+    let existingStyle = document.getElementById("dynamic-ad-blocker-style");
+    if (existingStyle) {
+      existingStyle.textContent = cssString;
+      adblockStyleElement = existingStyle;
+    } else {
+      adblockStyleElement = document.createElement("style");
+      adblockStyleElement.type = "text/css";
+      adblockStyleElement.id = "dynamic-ad-blocker-style";
+      adblockStyleElement.appendChild(document.createTextNode(cssString));
 
-    const inject = () => {
-      if (document.documentElement) {
-        document.documentElement.appendChild(adblockStyleElement);
-      } else {
-        setTimeout(inject, 1);
-      }
-    };
-    inject();
+      const inject = () => {
+        if (document.documentElement) {
+          document.documentElement.appendChild(adblockStyleElement);
+        } else {
+          setTimeout(inject, 1);
+        }
+      };
+      inject();
+    }
   }
 
   // 즉시 DOM 요소에 인라인 스타일 및 물리적 숨김 강제 적용 (확장 선택자 포함)
   const applyDirectStyles = () => {
-    const cleanCover = extractStringSelectors(coverSelectors);
     const cleanHide = extractStringSelectors(displayNoneSelectors);
 
     if (cleanHide && cleanHide.length > 0) {
@@ -2738,12 +2809,18 @@ function applyAdblockRulesSync(coverSelectors = [], displayNoneSelectors = [], c
         } catch (e) {}
       });
     }
-    if (cleanCover && cleanCover.length > 0) {
-      cleanCover.forEach((sel) => {
+    if (coverSelectors && coverSelectors.length > 0) {
+      coverSelectors.forEach((item) => {
+        if (!item) return;
+        const sel = typeof item === 'string' ? item : item.selector;
+        const col = (typeof item === 'object' && item.color) ? item.color : '#ffffff';
+        if (!sel) return;
         try {
-          querySelectorAllExtended(sel).forEach((el) => {
+          querySelectorAllExtended(normalizeWildcardSelector(sel.trim())).forEach((el) => {
             el.style.setProperty("position", "relative", "important");
             el.style.setProperty("overflow", "hidden", "important");
+            el.style.setProperty("background-color", col, "important");
+            el.style.setProperty("color", "transparent", "important");
           });
         } catch (e) {}
       });
@@ -2771,7 +2848,7 @@ function applyAdblockRulesSync(coverSelectors = [], displayNoneSelectors = [], c
 
   if (window.top === window.self) {
     console.log(
-      `[Dynamic Ad Blocker] 적용된 광고 셀렉터 (흰색 덮기: ${coverSelectors.length}, 영역 제거: ${displayNoneSelectors.length})`,
+      `[Dynamic Ad Blocker] 적용된 광고 셀렉터 (색상 덮기: ${coverSelectors.length}, 영역 제거: ${displayNoneSelectors.length})`,
     );
   }
 
@@ -2935,7 +3012,7 @@ function initRuntimeAdblockHooks() {
   }
 
   // 2. 동기적 극초기 적용 (캐시 로드 - 매칭되는 모든 규칙 수집)
-  const currentHost = window.location.hostname;
+  const currentHost = window.location.host || window.location.hostname;
   let rulesArray = GM_getValue("cachedRules", []);
 
   if (window.top === window.self) {
@@ -2954,7 +3031,7 @@ function initRuntimeAdblockHooks() {
 
     if (combinedCover.length > 0 || combinedHide.length > 0 || combinedStyle.length > 0) {
       applyAdblockRulesSync(combinedCover, combinedHide, combinedStyle);
-      console.log(`[Dynamic Ad Blocker] 극초기 캐시 적용 완료 (흰색덮기: ${combinedCover.length}, 영역제거: ${combinedHide.length})`);
+      console.log(`[Dynamic Ad Blocker] 극초기 캐시 적용 완료 (색상덮기: ${combinedCover.length}, 영역제거: ${combinedHide.length})`);
     }
   }
 
@@ -3108,7 +3185,7 @@ function initRuntimeAdblockHooks() {
 async function main() {
   if (window.top !== window.self) return;
 
-  const currentHost = window.location.hostname;
+  const currentHost = window.location.host || window.location.hostname;
   let rulesArray = GM_getValue("cachedRules", []);
 
   const gistConfig = getGistConfig();
@@ -3634,7 +3711,8 @@ function deduplicateShortcutList(list) {
       box-sizing: border-box;
     `;
 
-    const actionName = isShortcutType ? '단축키 지정' : (type === 'displayNone' ? '영역 제거(display:none)' : (type === 'style' ? '스타일 주입' : '흰색 덮기'));
+    const isCoverType = type === 'cover';
+    const actionName = isShortcutType ? '단축키 지정' : (type === 'displayNone' ? '영역 제거(display:none)' : (type === 'style' ? '스타일 주입' : '색상 덮기'));
     const isStyleType = type === 'style';
     const headerTitleColor = isShortcutType ? '#cba6f7' : '#ff9800';
 
@@ -3686,6 +3764,17 @@ function deduplicateShortcutList(list) {
           <select id="adblock-modal-candidate-select" style="width: 100%; max-width: 100%; box-sizing: border-box; height: 38px; padding: 6px 30px 6px 10px; background-color: #09090b; color: #4ade80; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none; cursor: pointer; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; display: block;">
           </select>
         </div>
+        ${isCoverType ? `
+        <div style="margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between;">
+          <label style="color: #a1a1aa; font-size: 12px; font-weight: 500;">덮을 배경 색상:</label>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <input type="color" id="adblock-modal-cover-color" value="#ffffff" style="width: 38px; height: 30px; padding: 1px 2px; background: #09090b; border: 1px solid #3f3f46; border-radius: 6px; cursor: pointer; vertical-align: middle;" title="색상 선택 (클릭 시 팔레트 표시)" />
+            <button type="button" id="adblock-modal-eyedropper-btn" style="padding: 5px 10px; background: #27272a; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 4px; font-weight: 500;" title="화면에서 마우스로 색상 추출">
+              💧 스포이드
+            </button>
+          </div>
+        </div>
+        ` : ''}
         ${isShortcutType ? `
         <div style="margin-bottom: 14px;">
           <label style="display: block; color: #a1a1aa; font-size: 12px; margin-bottom: 4px; font-weight: 500;">할당할 단축키 (Key):</label>
@@ -3704,8 +3793,8 @@ function deduplicateShortcutList(list) {
         ` : ''}
         <div style="margin-top: 10px; margin-bottom: 14px;">
           <label style="display: flex; align-items: center; gap: 8px; color: #a1a1aa; font-size: 12px; cursor: pointer; user-select: none; line-height: 1.3;" title="도메인의 숫자 부분을 * 와일드카드로 저장하여 넘버링 도메인에 동시 적용">
-            <input type="checkbox" id="adblock-modal-domain-wildcard" style="width: 16px; height: 16px; min-width: 16px; min-height: 16px; accent-color: #ff9800; cursor: pointer; flex-shrink: 0; margin: 0;" ${hasNumericDomain(window.location.hostname) ? 'checked' : ''} />
-            <span style="display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; line-height: 1.3;">와일드카드 도메인 적용 <span style="color: #ffab40; font-family: monospace; font-size: 11px;">(${getWildcardDomain(window.location.hostname)})</span></span>
+            <input type="checkbox" id="adblock-modal-domain-wildcard" style="width: 16px; height: 16px; min-width: 16px; min-height: 16px; accent-color: #ff9800; cursor: pointer; flex-shrink: 0; margin: 0;" ${hasNumericDomain(window.location.host || window.location.hostname) ? 'checked' : ''} />
+            <span style="display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; line-height: 1.3;">와일드카드 도메인 적용 <span style="color: #ffab40; font-family: monospace; font-size: 11px;">(${getWildcardDomain(window.location.host || window.location.hostname)})</span></span>
           </label>
         </div>
         <div style="display: flex; justify-content: flex-end; gap: 8px;">
@@ -3744,6 +3833,35 @@ function deduplicateShortcutList(list) {
       }
     };
     const styleInput = isStyleType ? modalContainer.querySelector("#adblock-modal-style-input") : null;
+    const colorInput = isCoverType ? modalContainer.querySelector("#adblock-modal-cover-color") : null;
+    const eyedropperBtn = isCoverType ? modalContainer.querySelector("#adblock-modal-eyedropper-btn") : null;
+
+    if (eyedropperBtn && colorInput) {
+      eyedropperBtn.onclick = async () => {
+        if (!window.EyeDropper) {
+          if (typeof Toast !== "undefined" && Toast.show) {
+            Toast.show("⚠️ 현재 브라우저는 스포이드(EyeDropper) API를 지원하지 않습니다.");
+          } else {
+            alert("현재 브라우저는 스포이드(EyeDropper) API를 지원하지 않습니다.");
+          }
+          return;
+        }
+        try {
+          const eyeDropper = new EyeDropper();
+          const result = await eyeDropper.open();
+          if (result && result.sRGBHex) {
+            colorInput.value = result.sRGBHex;
+            updateLiveStylePreview();
+          }
+        } catch (e) {
+          // ESC 등으로 취소 시 무시
+        }
+      };
+
+      colorInput.oninput = () => {
+        updateLiveStylePreview();
+      };
+    }
 
     if (inputEl) {
       inputEl.oninput = () => {
@@ -3761,12 +3879,17 @@ function deduplicateShortcutList(list) {
     }
 
     function updateLiveStylePreview() {
-      if (!isStyleType || !styleInput) return;
       const selVal = normalizeWildcardSelector(inputEl.value.trim());
-      const cssText = styleInput.value.trim();
-
-      if (selVal && cssText && !isExtendedSelector(selVal)) {
-        livePreviewStyle.textContent = `${selVal} { ${cssText} }`;
+      if (!selVal || isExtendedSelector(selVal)) {
+        livePreviewStyle.textContent = '';
+        return;
+      }
+      if (isStyleType && styleInput) {
+        const cssText = styleInput.value.trim();
+        livePreviewStyle.textContent = cssText ? `${selVal} { ${cssText} }` : '';
+      } else if (isCoverType && colorInput) {
+        const coverColor = colorInput.value || '#ffffff';
+        livePreviewStyle.textContent = `${selVal} { position: relative !important; overflow: hidden !important; }\n${selVal}::after { content: '' !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; background-color: ${coverColor} !important; z-index: 99999 !important; pointer-events: auto !important; }`;
       } else {
         livePreviewStyle.textContent = '';
       }
@@ -4148,6 +4271,9 @@ function deduplicateShortcutList(list) {
           const matchSel = codeVal.match(/document\.querySelector\((['"])(.*?)\1\)/);
           const extractedSel = matchSel ? matchSel[2] : val;
           onConfirm({ selector: extractedSel, key: shortcutKeyVal, isFunc: true, code: codeVal, useWildcardDomain: useWildcard });
+        } else if (isCoverType) {
+          const coverColor = colorInput ? colorInput.value : '#ffffff';
+          onConfirm({ selector: val, color: coverColor, useWildcardDomain: useWildcard });
         } else {
           onConfirm({ selector: val, useWildcardDomain: useWildcard });
         }
@@ -4174,25 +4300,29 @@ function deduplicateShortcutList(list) {
             } else if (type === 'cover') {
               targetElement.style.setProperty("position", "relative", "important");
               targetElement.style.setProperty("overflow", "hidden", "important");
+              targetElement.style.setProperty("background-color", colorStr, "important");
+              targetElement.style.setProperty("color", "transparent", "important");
             }
           } catch (e) {}
         }
 
         const selectorStr = typeof result === 'object' ? result.selector : result;
         const styleStr = typeof result === 'object' ? result.style : '';
+        const colorStr = typeof result === 'object' && result.color ? result.color : '#ffffff';
         const useWildcardDomain = typeof result === 'object' && result.useWildcardDomain;
 
         const targetHost = useWildcardDomain
           ? getWildcardDomain(window.location.origin)
           : window.location.origin;
 
+        const hostKey = window.location.host || window.location.hostname;
         let currentPageRules = rulesArray.find((v) =>
-          isMatch(v.host.replace(/^https?:\/\//, "").replace(/\/$/, ""), window.location.hostname),
+          isMatch(v.host.replace(/^https?:\/\//, "").replace(/\/$/, ""), hostKey),
         );
 
         if (useWildcardDomain) {
           const wildcardMatch = rulesArray.find((v) =>
-            v.host === targetHost || isMatch(v.host.replace(/^https?:\/\//, "").replace(/\/$/, ""), window.location.hostname)
+            v.host === targetHost || isMatch(v.host.replace(/^https?:\/\//, "").replace(/\/$/, ""), hostKey)
           );
           if (wildcardMatch) {
             currentPageRules = wildcardMatch;
@@ -4205,6 +4335,9 @@ function deduplicateShortcutList(list) {
           style: styleStr,
           createdAt: Date.now()
         };
+        if (type === 'cover') {
+          newItem.color = colorStr;
+        }
 
         if (!currentPageRules) {
           currentPageRules = {
@@ -4261,7 +4394,7 @@ function deduplicateShortcutList(list) {
     } catch (e) {
       console.warn("[Dynamic Ad Blocker] 클립보드 접근 실패:", e);
     }
-    const isHide = confirm("영역 제거(display:none) 방식을 사용하시겠습니까?\n\n[확인] -> 영역 제거 (display:none)\n[취소] -> 흰색 덮기");
+    const isHide = confirm("영역 제거(display:none) 방식을 사용하시겠습니까?\n\n[확인] -> 영역 제거 (display:none)\n[취소] -> 색상 덮기");
     let targetEl = null;
     if (clipboardText) {
       try { targetEl = document.querySelector(clipboardText); } catch (e) {}
@@ -4340,8 +4473,9 @@ function deduplicateShortcutList(list) {
 
       if (addedPatterns.length === 0) return;
 
+      const hostKey = window.location.host || window.location.hostname;
       let currentPageRules = rulesArray.find((v) =>
-        isMatch(v.host.replace(/^https?:\/\//, ""), window.location.hostname),
+        isMatch(v.host.replace(/^https?:\/\//, ""), hostKey),
       );
 
       if (currentPageRules) {
@@ -4399,13 +4533,14 @@ function handleShortcutAdd(finalSelector, targetElement = null) {
         ? getWildcardDomain(window.location.origin)
         : window.location.origin;
 
+      const hostKey = window.location.host || window.location.hostname;
       let currentPageRules = rulesArray.find((v) =>
-        isMatch(v.host.replace(/^https?:\/\//, "").replace(/\/$/, ""), window.location.hostname),
+        isMatch(v.host.replace(/^https?:\/\//, "").replace(/\/$/, ""), hostKey),
       );
 
       if (useWildcardDomain) {
         const wildcardMatch = rulesArray.find((v) =>
-          v.host === targetHost || isMatch(v.host.replace(/^https?:\/\//, "").replace(/\/$/, ""), window.location.hostname)
+          v.host === targetHost || isMatch(v.host.replace(/^https?:\/\//, "").replace(/\/$/, ""), hostKey)
         );
         if (wildcardMatch) {
           currentPageRules = wildcardMatch;
@@ -4723,11 +4858,18 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
         itemEl.appendChild(dateSpan);
       }
 
+      if (item.color) {
+        const colorBadge = document.createElement('span');
+        colorBadge.style.cssText = `display: inline-block; width: 12px; height: 12px; border-radius: 2px; background-color: ${item.color}; border: 1px solid rgba(255,255,255,0.3); vertical-align: middle; margin-right: 6px; flex-shrink: 0;`;
+        colorBadge.title = `덮기 색상: ${item.color}`;
+        itemEl.insertBefore(colorBadge, textSpan);
+      }
+
       body.appendChild(itemEl);
     });
   }
 
-  createSection('광고 선택자 (흰색 덮기)', coverSelectors, 'cover');
+  createSection('광고 선택자 (색상 덮기)', coverSelectors, 'cover');
   createSection('광고 선택자 (영역 제거 - display:none)', hideSelectors, 'hide');
   createSection('커스텀 주입 스타일 (Custom Style)', customStyles, 'custom');
   createSection('차단 광고 링크 (URL Pattern)', urlPatterns, 'url');
@@ -4858,8 +5000,9 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
   }
 
   async function handleDeleteListClick() {
+    const hostKey = window.location.host || window.location.hostname;
     let currentPageRules = rulesArray.find((v) =>
-      isMatch(v.host.replace(/^https?:\/\//, ""), window.location.hostname),
+      isMatch(v.host.replace(/^https?:\/\//, ""), hostKey),
     );
 
     if (!currentPageRules) {
@@ -5078,8 +5221,9 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
     return;
   }
 
+  const hostKey = window.location.host || window.location.hostname;
   const supportedPages = rulesArray.some((v) =>
-    isMatch(v.host.replace(/^https?:\/\//, ""), window.location.hostname),
+    isMatch(v.host.replace(/^https?:\/\//, ""), hostKey),
   );
   if (!supportedPages) {
     if (adblockStyleElement) {
