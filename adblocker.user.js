@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202609031454
+// @version      202609031500
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -4968,13 +4968,6 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
 
     registerTampermonkeyMenuCommands(isBlacklisted);
 
-    if (isBlacklisted) {
-      // 블랙리스트 사이트에서는 플로팅 버튼 그룹 생성 안함 (혹시 있으면 제거)
-      const existing = document.getElementById("adblock-ui-group");
-      if (existing) existing.remove();
-      return;
-    }
-
     makeButtonGroups({
       handleManualClick,
       handlePickerCoverClick,
@@ -4992,12 +4985,6 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
   setupFloatingButton();
 
   function ensureFloatingButtonExists() {
-    if (checkIsBlacklisted()) {
-      const existing = document.getElementById("adblock-ui-group");
-      if (existing) existing.remove();
-      return;
-    }
-
     if (window.__adblock_isFloatingHidden) return;
     const targetParent = document.body || document.documentElement;
     if (!targetParent) return;
@@ -5082,6 +5069,15 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
 
   clipboardEventListener({ handleClick: handleManualClick });
 
+  // 블랙리스트 페이지에서는 광고 차단 룰(덮기, 숨기기, 스타일 주입 등)을 적용하지 않음
+  if (checkIsBlacklisted()) {
+    if (adblockStyleElement) {
+      applyAdblockRules([]);
+    }
+    console.log(`[Dynamic Ad Blocker] 블랙리스트 사이트이므로 광고 차단 룰 적용을 생략합니다. (플로팅 버튼은 유지)`);
+    return;
+  }
+
   const supportedPages = rulesArray.some((v) =>
     isMatch(v.host.replace(/^https?:\/\//, ""), window.location.hostname),
   );
@@ -5100,17 +5096,24 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
 // ==========================================================================
 const isCurrentFrameBlacklisted = checkIsBlacklisted();
 
-if (isCurrentFrameBlacklisted) {
-  console.log(`[Dynamic Ad Blocker] ⛔ 블랙리스트 등록 사이트(또는 상위 프레임이 블랙리스트)로 감지되었습니다. 모든 adblocker 기능이 비활성화됩니다. (${window.location.href})`);
-  if (window.top === window.self) {
-    registerTampermonkeyMenuCommands(true);
+// 1. 하위 iframe 내부인 경우: 상위 조상이 블랙리스트이면 즉시 완전 종료
+if (window.top !== window.self) {
+  if (isCurrentFrameBlacklisted) {
+    return;
   }
-} else {
-  if (window.top === window.self) {
-    registerTampermonkeyMenuCommands(false);
-  }
-  initEventListenerTracker();
   initRuntimeAdblockHooks();
+} else {
+  // 2. 최상위 메인 창인 경우:
+  registerTampermonkeyMenuCommands(isCurrentFrameBlacklisted);
+
+  if (!isCurrentFrameBlacklisted) {
+    initEventListenerTracker();
+    initRuntimeAdblockHooks();
+  } else {
+    console.log(`[Dynamic Ad Blocker] ⛔ 블랙리스트 사이트: 광고 차단/스타일 주입은 중단되며, 플로팅 버튼(해제 버튼)은 유지됩니다.`);
+  }
+
+  // [핵심] 최상위 창에서는 플로팅 버튼 노출 및 제어를 위해 main()을 항상 실행
   main();
 }
 
