@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202609031326
+// @version      202609031454
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -102,46 +102,49 @@ function getRelevantHostsAndOrigins() {
     }
   } catch (e) {}
 
-  // 2. 최상위 창(window.top) 정보 (동일 도메인이면 직접 접근 가능)
-  try {
-    if (window.top && window.top !== window.self && window.top.location) {
-      if (window.top.location.hostname) hosts.add(window.top.location.hostname);
-      if (window.top.location.host) hosts.add(window.top.location.host);
-      if (window.top.location.origin) hosts.add(window.top.location.origin);
-    }
-  } catch (e) {}
-
-  // 3. 직속 부모 창(window.parent) 정보 (동일 도메인이면 직접 접근 가능)
-  try {
-    if (window.parent && window.parent !== window.self && window.parent.location) {
-      if (window.parent.location.hostname) hosts.add(window.parent.location.hostname);
-      if (window.parent.location.host) hosts.add(window.parent.location.host);
-      if (window.parent.location.origin) hosts.add(window.parent.location.origin);
-    }
-  } catch (e) {}
-
-  // 4. Chrome/WebKit 등 모던 브라우저의 ancestorOrigins (iframe의 모든 조상 프레임 origin 배열)
-  try {
-    if (window.location && window.location.ancestorOrigins && window.location.ancestorOrigins.length > 0) {
-      for (let i = 0; i < window.location.ancestorOrigins.length; i++) {
-        const ancestor = window.location.ancestorOrigins[i];
-        if (ancestor) hosts.add(ancestor);
+  // 2~5. 상위 창 및 조상 정보는 오직 iframe 내부일 때만 확인 (최상위 창의 이전 방문 사이트 referrer 오판 방지)
+  if (window.top !== window.self) {
+    // 최상위 창(window.top) 정보 (동일 도메인이면 직접 접근 가능)
+    try {
+      if (window.top && window.top.location) {
+        if (window.top.location.hostname) hosts.add(window.top.location.hostname);
+        if (window.top.location.host) hosts.add(window.top.location.host);
+        if (window.top.location.origin) hosts.add(window.top.location.origin);
       }
-    }
-  } catch (e) {}
+    } catch (e) {}
 
-  // 5. document.referrer (iframe을 삽입한 부모 페이지의 URL)
-  try {
-    if (document.referrer) {
-      try {
-        const refUrl = new URL(document.referrer);
-        if (refUrl.hostname) hosts.add(refUrl.hostname);
-        if (refUrl.origin) hosts.add(refUrl.origin);
-      } catch (err) {
-        hosts.add(document.referrer);
+    // 직속 부모 창(window.parent) 정보 (동일 도메인이면 직접 접근 가능)
+    try {
+      if (window.parent && window.parent.location) {
+        if (window.parent.location.hostname) hosts.add(window.parent.location.hostname);
+        if (window.parent.location.host) hosts.add(window.parent.location.host);
+        if (window.parent.location.origin) hosts.add(window.parent.location.origin);
       }
-    }
-  } catch (e) {}
+    } catch (e) {}
+
+    // Chrome/WebKit 등 모던 브라우저의 ancestorOrigins (iframe의 모든 조상 프레임 origin 배열)
+    try {
+      if (window.location && window.location.ancestorOrigins && window.location.ancestorOrigins.length > 0) {
+        for (let i = 0; i < window.location.ancestorOrigins.length; i++) {
+          const ancestor = window.location.ancestorOrigins[i];
+          if (ancestor) hosts.add(ancestor);
+        }
+      }
+    } catch (e) {}
+
+    // document.referrer (iframe을 삽입한 부모 페이지의 URL)
+    try {
+      if (document.referrer) {
+        try {
+          const refUrl = new URL(document.referrer);
+          if (refUrl.hostname) hosts.add(refUrl.hostname);
+          if (refUrl.origin) hosts.add(refUrl.origin);
+        } catch (err) {
+          hosts.add(document.referrer);
+        }
+      }
+    } catch (e) {}
+  }
 
   return Array.from(hosts);
 }
@@ -273,8 +276,8 @@ function registerTampermonkeyMenuCommands(isBlacklisted = false) {
           }
         });
         GM_registerMenuCommand("🔄 수동 업데이트", () => {
-          const updateUrl = "https://github.com/SuperLeeK/tampermonkey-adblocker/raw/refs/heads/main/adblocker.user.js";
-          window.location.href = updateUrl;
+          const updateUrl = "https://raw.githubusercontent.com/SuperLeeK/tampermonkey-adblocker/main/adblocker.user.js";
+          window.open(updateUrl, "_blank");
         });
         return;
       }
@@ -356,8 +359,8 @@ function registerTampermonkeyMenuCommands(isBlacklisted = false) {
       });
 
       GM_registerMenuCommand("🔄 수동 업데이트", () => {
-        const updateUrl = "https://github.com/SuperLeeK/tampermonkey-adblocker/raw/refs/heads/main/adblocker.user.js";
-        window.location.href = updateUrl;
+        const updateUrl = "https://raw.githubusercontent.com/SuperLeeK/tampermonkey-adblocker/main/adblocker.user.js";
+        window.open(updateUrl, "_blank");
       });
     } catch (e) {}
   }
@@ -1713,8 +1716,8 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
     variant: "warning",
     size: "small",
     onClick: () => {
-      const updateUrl = "https://github.com/SuperLeeK/tampermonkey-adblocker/raw/refs/heads/main/adblocker.user.js";
-      window.location.href = updateUrl;
+      const updateUrl = "https://raw.githubusercontent.com/SuperLeeK/tampermonkey-adblocker/main/adblocker.user.js";
+      window.open(updateUrl, "_blank");
     },
   });
   if (scriptUpdateBtn && scriptUpdateBtn.element) {
@@ -3104,6 +3107,9 @@ function initRuntimeAdblockHooks() {
 
 async function main() {
   if (window.top !== window.self) return;
+
+  const currentHost = window.location.hostname;
+  let rulesArray = GM_getValue("cachedRules", []);
 
   const gistConfig = getGistConfig();
 
