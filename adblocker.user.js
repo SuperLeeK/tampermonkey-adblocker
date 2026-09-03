@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202609030825
+// @version      202609031326
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -25,12 +25,260 @@
 // @exclude      https://*github*
 // ==/UserScript==
 
+function normalizeDomain(str) {
+  if (!str || typeof str !== 'string') return '';
+  return str.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').replace(/:\d+$/, '').trim().toLowerCase();
+}
+
+function getBaseDomain(hostname) {
+  if (!hostname || typeof hostname !== 'string') return '';
+  let host = normalizeDomain(hostname);
+
+  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(host)) return host;
+  if (host.includes(':')) return host;
+
+  const parts = host.split('.');
+  if (parts.length <= 2) return host;
+
+  const twoLevelTlds = new Set([
+    'co.kr', 'ne.kr', 'or.kr', 're.kr', 'pe.kr', 'go.kr', 'mil.kr', 'ac.kr', 'hs.kr', 'ms.kr', 'es.kr', 'sc.kr', 'kg.kr',
+    'co.jp', 'ne.jp', 'or.jp', 'ac.jp', 'go.jp',
+    'co.uk', 'org.uk', 'me.uk', 'ltd.uk', 'plc.uk', 'net.uk',
+    'com.tw', 'org.tw', 'net.tw', 'idv.tw',
+    'com.cn', 'net.cn', 'org.cn', 'gov.cn',
+    'com.hk', 'org.hk', 'net.hk',
+    'com.sg', 'net.sg', 'org.sg',
+    'com.au', 'net.au', 'org.au',
+    'com.br', 'net.br', 'org.br'
+  ]);
+
+  const lastTwo = parts.slice(-2).join('.');
+  if (twoLevelTlds.has(lastTwo)) {
+    if (parts.length >= 3) {
+      return parts.slice(-3).join('.');
+    }
+    return host;
+  }
+
+  return parts.slice(-2).join('.');
+}
+
+function isMatch(ruleStr, targetStr) {
+  if (!ruleStr || !targetStr) return false;
+  const cleanRule = ruleStr.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "").trim().toLowerCase();
+  const cleanTarget = targetStr.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "").trim().toLowerCase();
+
+  // 1. 정확히 지정한 도메인만 일치 (Strict Exact Match)
+  if (cleanRule === cleanTarget) {
+    return true;
+  }
+
+  // 2. 와일드카드(*)가 포함된 경우 패턴 매칭
+  if (cleanRule.includes("*")) {
+    const escaped = cleanRule.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+    const wildcardRegexStr = escaped.replace(/\*/g, ".*");
+    const regexStr = "^" + wildcardRegexStr + "$";
+    try {
+      const regex = new RegExp(regexStr);
+      return regex.test(cleanTarget);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  return false;
+}
+
+function getRelevantHostsAndOrigins() {
+  const hosts = new Set();
+
+  // 1. 현재 프레임의 위치 정보
+  try {
+    if (window.location) {
+      if (window.location.hostname) hosts.add(window.location.hostname);
+      if (window.location.host) hosts.add(window.location.host);
+      if (window.location.origin) hosts.add(window.location.origin);
+      if (window.location.href) hosts.add(window.location.href);
+    }
+  } catch (e) {}
+
+  // 2. 최상위 창(window.top) 정보 (동일 도메인이면 직접 접근 가능)
+  try {
+    if (window.top && window.top !== window.self && window.top.location) {
+      if (window.top.location.hostname) hosts.add(window.top.location.hostname);
+      if (window.top.location.host) hosts.add(window.top.location.host);
+      if (window.top.location.origin) hosts.add(window.top.location.origin);
+    }
+  } catch (e) {}
+
+  // 3. 직속 부모 창(window.parent) 정보 (동일 도메인이면 직접 접근 가능)
+  try {
+    if (window.parent && window.parent !== window.self && window.parent.location) {
+      if (window.parent.location.hostname) hosts.add(window.parent.location.hostname);
+      if (window.parent.location.host) hosts.add(window.parent.location.host);
+      if (window.parent.location.origin) hosts.add(window.parent.location.origin);
+    }
+  } catch (e) {}
+
+  // 4. Chrome/WebKit 등 모던 브라우저의 ancestorOrigins (iframe의 모든 조상 프레임 origin 배열)
+  try {
+    if (window.location && window.location.ancestorOrigins && window.location.ancestorOrigins.length > 0) {
+      for (let i = 0; i < window.location.ancestorOrigins.length; i++) {
+        const ancestor = window.location.ancestorOrigins[i];
+        if (ancestor) hosts.add(ancestor);
+      }
+    }
+  } catch (e) {}
+
+  // 5. document.referrer (iframe을 삽입한 부모 페이지의 URL)
+  try {
+    if (document.referrer) {
+      try {
+        const refUrl = new URL(document.referrer);
+        if (refUrl.hostname) hosts.add(refUrl.hostname);
+        if (refUrl.origin) hosts.add(refUrl.origin);
+      } catch (err) {
+        hosts.add(document.referrer);
+      }
+    }
+  } catch (e) {}
+
+  return Array.from(hosts);
+}
+
+function checkIsBlacklisted() {
+  try {
+    const cached = GM_getValue("cachedBlackList", []);
+    if (!Array.isArray(cached) || cached.length === 0) return false;
+
+    const candidates = getRelevantHostsAndOrigins();
+
+    return candidates.some(cand => {
+      const normCand = normalizeDomain(cand);
+      if (!normCand) return false;
+
+      return cached.some(item => {
+        const normItem = normalizeDomain(item);
+        if (!normItem) return false;
+        if (normItem === normCand) return true;
+        if (typeof isMatch === 'function' && isMatch(normItem, normCand)) return true;
+        return false;
+      });
+    });
+  } catch (e) {
+    return false;
+  }
+}
+
+async function handleBlacklistClick() {
+  const gistConfig = typeof getGistConfig === "function" ? getGistConfig() : { gistId: "", token: "" };
+  if (!gistConfig.gistId || !gistConfig.token) {
+    if (typeof Toast !== "undefined" && Toast.show) {
+      Toast.show("Gist 설정 정보가 없습니다. 먼저 Gist ID와 Token을 설정해주세요.");
+    } else {
+      alert("Gist 설정 정보가 없습니다. 먼저 Gist ID와 Token을 설정해주세요.");
+    }
+    if (typeof showGistConfigModal === "function") {
+      showGistConfigModal();
+    }
+    return;
+  }
+
+  try {
+    const blackListGist = useGist(
+      gistConfig.gistId, 
+      gistConfig.token,
+      gistConfig.blackListFileName || "ad_selector_blacklist.json",
+    );
+    const list = (await blackListGist.get()) || [];
+    list.push(window.location.origin);
+    const uniqueList = Array.from(new Set(list.map(JSON.stringify))).map((e) => JSON.parse(e));
+    await blackListGist.set(uniqueList);
+    GM_setValue("cachedBlackList", uniqueList);
+    if (typeof Toast !== "undefined" && Toast.show) {
+      Toast.show('성공적으로 블랙리스트에 추가되었습니다. 페이지를 새로고침합니다.');
+    } else {
+      alert('성공적으로 블랙리스트에 추가되었습니다. 페이지를 새로고침합니다.');
+    }
+    setTimeout(() => {
+      window.location.reload();
+    }, 1000);
+  } catch (e) {
+    console.error("[Dynamic Ad Blocker] 블랙리스트 추가 실패:", e);
+    alert("블랙리스트 추가 중 오류가 발생했습니다: " + (e.message || e));
+  }
+}
+
+async function handleBlacklistReleaseClick() {
+  const gistConfig = typeof getGistConfig === "function" ? getGistConfig() : { gistId: "", token: "" };
+  const currentOrigin = window.location.origin;
+  const currentHost = normalizeDomain(window.location.hostname || window.location.host);
+
+  // 1. 로컬 캐시 즉시 정리
+  try {
+    const cachedList = GM_getValue("cachedBlackList", []);
+    const updatedCached = (Array.isArray(cachedList) ? cachedList : []).filter(item => {
+      const norm = normalizeDomain(item);
+      return norm !== currentHost && item !== currentOrigin;
+    });
+    GM_setValue("cachedBlackList", updatedCached);
+  } catch (e) {}
+
+  // 2. Gist 동기화
+  if (gistConfig.gistId && gistConfig.token && typeof useGist === "function") {
+    try {
+      const blackListGist = useGist(
+        gistConfig.gistId, 
+        gistConfig.token,
+        gistConfig.blackListFileName || "ad_selector_blacklist.json",
+      );
+      const list = (await blackListGist.get()) || [];
+      const updatedList = list.filter(item => {
+        const norm = normalizeDomain(item);
+        return norm !== currentHost && item !== currentOrigin;
+      });
+      await blackListGist.set(updatedList);
+    } catch (e) {
+      console.error("[Dynamic Ad Blocker] Gist 블랙리스트 동기화 실패:", e);
+    }
+  }
+
+  if (typeof Toast !== "undefined" && Toast.show) {
+    Toast.show('성공적으로 블랙리스트에서 제외되었습니다. 적용을 위해 페이지를 새로고침합니다.');
+  } else {
+    alert('성공적으로 블랙리스트에서 제외되었습니다. 새로고침합니다.');
+  }
+  setTimeout(() => {
+    window.location.reload();
+  }, 1000);
+}
+
 function registerTampermonkeyMenuCommands(isBlacklisted = false) {
+  if (window.top !== window.self) return; // iframe에서는 메뉴 등록 안함
   if (window.__adblockMenuRegistered) return;
   window.__adblockMenuRegistered = true;
 
   if (typeof GM_registerMenuCommand !== "undefined") {
     try {
+      if (isBlacklisted) {
+        // 블랙리스트 페이지에서는 해제 메뉴, Gist 설정, 업데이트 메뉴만 등록
+        GM_registerMenuCommand("🟢 블랙리스트 해제", () => {
+          handleBlacklistReleaseClick();
+        });
+        GM_registerMenuCommand("⚙️ Gist 설정", () => {
+          if (typeof window.__adblock_openGistConfig === "function") {
+            window.__adblock_openGistConfig();
+          } else if (typeof showGistConfigModal === "function") {
+            showGistConfigModal();
+          }
+        });
+        GM_registerMenuCommand("🔄 수동 업데이트", () => {
+          const updateUrl = "https://github.com/SuperLeeK/tampermonkey-adblocker/raw/refs/heads/main/adblocker.user.js";
+          window.location.href = updateUrl;
+        });
+        return;
+      }
+
       GM_registerMenuCommand("🎈 플로팅버튼 토글", () => {
         if (typeof window.__adblock_toggleFloatingButton === "function") {
           window.__adblock_toggleFloatingButton();
@@ -90,20 +338,21 @@ function registerTampermonkeyMenuCommands(isBlacklisted = false) {
         }
       });
 
-      const blacklistLabel = isBlacklisted ? "🟢 블랙리스트 해제" : "⛔ 블랙리스트 추가";
-      GM_registerMenuCommand(blacklistLabel, () => {
-        if (typeof window.__adblock_toggleBlacklist === "function") {
-          window.__adblock_toggleBlacklist();
+      const isAntiDebuggerEnabled = GM_getValue("adblock_anti_debugger_enabled", true);
+      const antiDebuggerLabel = isAntiDebuggerEnabled ? "🛡️ 디버거 방어: ON" : "🛡️ 디버거 방어: OFF";
+      GM_registerMenuCommand(antiDebuggerLabel, () => {
+        const nextState = !isAntiDebuggerEnabled;
+        GM_setValue("adblock_anti_debugger_enabled", nextState);
+        if (typeof Toast !== "undefined" && Toast.show) {
+          Toast.show(`안티 디버거 방어를 ${nextState ? '활성화' : '비활성화'}했습니다. 새로고침합니다.`);
         } else {
-          const isCurrentlyBlacklisted = typeof checkIsBlacklisted === "function" ? checkIsBlacklisted() : isBlacklisted;
-          if (isCurrentlyBlacklisted && typeof handleBlacklistReleaseClick === "function") {
-            handleBlacklistReleaseClick();
-          } else if (!isCurrentlyBlacklisted && typeof handleBlacklistClick === "function") {
-            handleBlacklistClick();
-          } else {
-            if (typeof Toast !== "undefined" && Toast.show) Toast.show("블랙리스트 액션을 실행할 수 없습니다.");
-          }
+          alert(`안티 디버거 방어를 ${nextState ? '활성화' : '비활성화'}했습니다. 새로고침합니다.`);
         }
+        setTimeout(() => window.location.reload(), 600);
+      });
+
+      GM_registerMenuCommand("⛔ 블랙리스트 추가", () => {
+        handleBlacklistClick();
       });
 
       GM_registerMenuCommand("🔄 수동 업데이트", () => {
@@ -114,9 +363,7 @@ function registerTampermonkeyMenuCommands(isBlacklisted = false) {
   }
 }
 
-registerTampermonkeyMenuCommands();
-
-(function initEventListenerTracker() {
+function initEventListenerTracker() {
   if (window.__adblockTrackerInitialized) return;
   window.__adblockTrackerInitialized = true;
   window.__adblockCapturedEvents = [];
@@ -145,7 +392,7 @@ registerTampermonkeyMenuCommands();
       return origAddEventListener.call(this, type, listener, options);
     };
   } catch (e) {}
-})();
+}
 
 function showCapturedEventsModal() {
   const existing = document.getElementById("adblock-captured-events-modal");
@@ -1018,62 +1265,6 @@ function showGistConfigModal(onSaved) {
   };
 }
 
-function normalizeDomain(str) {
-  if (!str || typeof str !== 'string') return '';
-  return str.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').replace(/:\d+$/, '').trim().toLowerCase();
-}
-
-function getBaseDomain(hostname) {
-  if (!hostname || typeof hostname !== 'string') return '';
-  let host = normalizeDomain(hostname);
-
-  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(host)) return host;
-  if (host.includes(':')) return host;
-
-  const parts = host.split('.');
-  if (parts.length <= 2) return host;
-
-  const twoLevelTlds = new Set([
-    'co.kr', 'ne.kr', 'or.kr', 're.kr', 'pe.kr', 'go.kr', 'mil.kr', 'ac.kr', 'hs.kr', 'ms.kr', 'es.kr', 'sc.kr', 'kg.kr',
-    'co.jp', 'ne.jp', 'or.jp', 'ac.jp', 'go.jp',
-    'co.uk', 'org.uk', 'me.uk', 'ltd.uk', 'plc.uk', 'net.uk',
-    'com.tw', 'org.tw', 'net.tw', 'idv.tw',
-    'com.cn', 'net.cn', 'org.cn', 'gov.cn',
-    'com.hk', 'org.hk', 'net.hk',
-    'com.sg', 'net.sg', 'org.sg',
-    'com.au', 'net.au', 'org.au',
-    'com.br', 'net.br', 'org.br'
-  ]);
-
-  const lastTwo = parts.slice(-2).join('.');
-  if (twoLevelTlds.has(lastTwo)) {
-    if (parts.length >= 3) {
-      return parts.slice(-3).join('.');
-    }
-    return host;
-  }
-
-  return parts.slice(-2).join('.');
-}
-
-function checkIsBlacklisted() {
-  try {
-    const cached = GM_getValue("cachedBlackList", []);
-    const currentHost = normalizeDomain(window.location.hostname || window.location.host || window.location.origin);
-    if (!currentHost) return false;
-
-    return cached.some(item => {
-      const normItem = normalizeDomain(item);
-      if (!normItem) return false;
-      if (normItem === currentHost) return true;
-      if (typeof isMatch === 'function' && isMatch(normItem, currentHost)) return true;
-      return false;
-    });
-  } catch (e) {
-    return false;
-  }
-}
-
 function getImageBlurHost() {
   let host = "";
   try {
@@ -1813,32 +2004,6 @@ function clipboardEventListener({ handleClick }) {
     document.addEventListener("DOMContentLoaded", inject, { once: true });
   }
 })();
-
-function isMatch(ruleStr, targetStr) {
-  if (!ruleStr || !targetStr) return false;
-  const cleanRule = ruleStr.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "").trim().toLowerCase();
-  const cleanTarget = targetStr.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "").trim().toLowerCase();
-
-  // 1. 정확히 지정한 도메인만 일치 (Strict Exact Match)
-  if (cleanRule === cleanTarget) {
-    return true;
-  }
-
-  // 2. 와일드카드(*)가 포함된 경우만 패턴 매칭
-  if (cleanRule.includes("*")) {
-    const escaped = cleanRule.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
-    const wildcardRegexStr = escaped.replace(/\*/g, ".*");
-    const regexStr = "^" + wildcardRegexStr + "$";
-    try {
-      const regex = new RegExp(regexStr);
-      return regex.test(cleanTarget);
-    } catch (e) {
-      return false;
-    }
-  }
-
-  return false;
-}
 
 function getWildcardDomain(domainOrUrl) {
   if (!domainOrUrl) return domainOrUrl;
@@ -2633,216 +2798,309 @@ function applyAdblockRules(coverSelectors = [], displayNoneSelectors = [], custo
   applyAdblockRulesSync(coverSelectors, displayNoneSelectors, customStyleList);
 }
 
-// 1. GM_webRequest를 이용한 네트워크 수준 사전 차단
-if (typeof GM_webRequest !== 'undefined') {
-  const defaultBlockedUrls = [
-    '*://*.googlesyndication.com/*',
-    '*://*.doubleclick.net/*',
-    '*://*.googletagservices.com/*',
-    '*://*.google-analytics.com/*',
-    '*://*.popads.net/*',
-    '*://*.exoclick.com/*',
-    '*://*.a-ads.com/*'
-  ];
+// 🛡️ 안티 디버거(debugger; 무한 루프) 무력화 모듈
+function initAntiDebugger() {
+  const isEnabled = GM_getValue("adblock_anti_debugger_enabled", true);
+  if (!isEnabled) return;
 
-  // 로컬 캐시에서 사용자가 등록한 차단 패턴들을 수집
-  const localRules = GM_getValue("cachedRules", []);
-  const customBlockedUrls = [];
-  localRules.forEach(rule => {
+  try {
+    const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+    if (!win) return;
+
+    // 1. Function 생성자 및 Function.prototype.constructor 훅
+    const OriginalFunction = win.Function;
+    const hookedFunction = function(...args) {
+      if (args.length > 0) {
+        const lastArg = args[args.length - 1];
+        if (typeof lastArg === 'string' && /debugger\s*;?/i.test(lastArg)) {
+          const sanitized = lastArg.replace(/debugger\s*;?/gi, '/* debugger blocked */');
+          args[args.length - 1] = sanitized;
+          if (!sanitized.replace(/\/\*[\s\S]*?\*\//g, '').trim()) {
+            return function() {};
+          }
+        }
+      }
+      if (new.target) {
+        return Reflect.construct(OriginalFunction, args, new.target);
+      }
+      return OriginalFunction.apply(this, args);
+    };
+
+    hookedFunction.prototype = OriginalFunction.prototype;
+    try {
+      win.Function = hookedFunction;
+      win.Function.prototype.constructor = hookedFunction;
+    } catch (e) {}
+
+    // 2. eval 훅 (eval("debugger") 무력화)
+    if (win.eval) {
+      const origEval = win.eval;
+      win.eval = function(code) {
+        if (typeof code === 'string' && /debugger\s*;?/i.test(code)) {
+          code = code.replace(/debugger\s*;?/gi, '/* debugger blocked */');
+        }
+        return origEval.call(this, code);
+      };
+    }
+
+    // 3. setInterval / setTimeout 타이머 훅 (debugger 주기적 실행 차단)
+    const origSetInterval = win.setInterval;
+    win.setInterval = function(handler, timeout, ...args) {
+      if (typeof handler === 'string' && /debugger\s*;?/i.test(handler)) {
+        return 0;
+      }
+      if (typeof handler === 'function') {
+        try {
+          const fnStr = handler.toString();
+          if (/debugger\s*;?/i.test(fnStr) && fnStr.length < 150) {
+            return 0;
+          }
+        } catch (e) {}
+      }
+      return origSetInterval.call(this, handler, timeout, ...args);
+    };
+
+    const origSetTimeout = win.setTimeout;
+    win.setTimeout = function(handler, timeout, ...args) {
+      if (typeof handler === 'string' && /debugger\s*;?/i.test(handler)) {
+        return 0;
+      }
+      if (typeof handler === 'function') {
+        try {
+          const fnStr = handler.toString();
+          if (/debugger\s*;?/i.test(fnStr) && fnStr.length < 150) {
+            return 0;
+          }
+        } catch (e) {}
+      }
+      return origSetTimeout.call(this, handler, timeout, ...args);
+    };
+
+    // 4. console.clear 방어 (개발자 도구 콘솔 지우기 방지)
+    if (win.console && win.console.clear) {
+      win.console.clear = function() {
+        console.log("[Dynamic Ad Blocker] 악의적인 console.clear() 호출을 차단했습니다.");
+      };
+    }
+
+    console.log("[Dynamic Ad Blocker] 🛡️ 안티 디버거 방어 모듈이 활성화되었습니다.");
+  } catch (e) {
+    console.error("[Dynamic Ad Blocker] 안티 디버거 초기화 실패:", e);
+  }
+}
+
+function initRuntimeAdblockHooks() {
+  // 0. 안티 디버거 무력화 훅 우선 실행
+  initAntiDebugger();
+
+  // 1. GM_webRequest를 이용한 네트워크 수준 사전 차단
+  if (typeof GM_webRequest !== 'undefined') {
+    const defaultBlockedUrls = [
+      '*://*.googlesyndication.com/*',
+      '*://*.doubleclick.net/*',
+      '*://*.googletagservices.com/*',
+      '*://*.google-analytics.com/*',
+      '*://*.popads.net/*',
+      '*://*.exoclick.com/*',
+      '*://*.a-ads.com/*'
+    ];
+
+    // 로컬 캐시에서 사용자가 등록한 차단 패턴들을 수집
+    const localRules = GM_getValue("cachedRules", []);
+    const customBlockedUrls = [];
+    localRules.forEach(rule => {
+      if (rule.blockedUrlPatterns && Array.isArray(rule.blockedUrlPatterns)) {
+        rule.blockedUrlPatterns.forEach(pattern => {
+          if (pattern && typeof pattern === 'string') {
+            customBlockedUrls.push(pattern);
+          }
+        });
+      }
+    });
+
+    // 중복 제거 및 최종 패턴 구성
+    const allBlockedPatterns = Array.from(new Set([...defaultBlockedUrls, ...customBlockedUrls]));
+    
+    const webRequestRules = allBlockedPatterns.map(pattern => ({
+      selector: pattern,
+      action: 'cancel'
+    }));
+
+    GM_webRequest(webRequestRules, function(info) {
+      console.log(`[Dynamic Ad Blocker] Blocked request: ${info.url}`);
+    });
+  }
+
+  // 2. 동기적 극초기 적용 (캐시 로드 - 매칭되는 모든 규칙 수집)
+  const currentHost = window.location.hostname;
+  let rulesArray = GM_getValue("cachedRules", []);
+
+  if (window.top === window.self) {
+    let combinedCover = [];
+    let combinedHide = [];
+    let combinedStyle = [];
+
+    rulesArray.forEach((v) => {
+      const ruleHost = (v.host || "").replace(/^https?:\/\//, "").replace(/\/$/, "");
+      if (isMatch(ruleHost, currentHost)) {
+        if (v.selectorList) combinedCover.push(...v.selectorList);
+        if (v.displayNoneSelectorList) combinedHide.push(...v.displayNoneSelectorList);
+        if (v.customStyleList) combinedStyle.push(...v.customStyleList);
+      }
+    });
+
+    if (combinedCover.length > 0 || combinedHide.length > 0 || combinedStyle.length > 0) {
+      applyAdblockRulesSync(combinedCover, combinedHide, combinedStyle);
+      console.log(`[Dynamic Ad Blocker] 극초기 캐시 적용 완료 (흰색덮기: ${combinedCover.length}, 영역제거: ${combinedHide.length})`);
+    }
+  }
+
+  // 3. 자바스크립트 API 및 DOM 런타임 프록시 차단 (이중 방어선)
+  const blockDomains = [];
+  const defaultDomains = [
+    'googlesyndication.com',
+    'doubleclick.net',
+    'googletagservices.com',
+    'google-analytics.com',
+    'popads.net',
+    'exoclick.com',
+    'a-ads.com'
+  ];
+  blockDomains.push(...defaultDomains);
+
+  rulesArray.forEach(rule => {
     if (rule.blockedUrlPatterns && Array.isArray(rule.blockedUrlPatterns)) {
       rule.blockedUrlPatterns.forEach(pattern => {
         if (pattern && typeof pattern === 'string') {
-          customBlockedUrls.push(pattern);
+          const domain = pattern
+            .replace(/^\*:\/\/\*\./, '')
+            .replace(/^\*:\/\//, '')
+            .split('/')[0];
+          if (domain) {
+            blockDomains.push(domain);
+          }
         }
       });
     }
   });
 
-  // 중복 제거 및 최종 패턴 구성
-  const allBlockedPatterns = Array.from(new Set([...defaultBlockedUrls, ...customBlockedUrls]));
-  
-  const webRequestRules = allBlockedPatterns.map(pattern => ({
-    selector: pattern,
-    action: 'cancel'
-  }));
+  const uniqueBlockDomains = Array.from(new Set(blockDomains));
 
-  GM_webRequest(webRequestRules, function(info) {
-    console.log(`[Dynamic Ad Blocker] Blocked request: ${info.url}`);
-  });
-}
-
-// 2. 동기적 극초기 적용 (캐시 로드 - 매칭되는 모든 규칙 수집)
-const currentHost = window.location.hostname;
-const cachedBlackList = GM_getValue("cachedBlackList", []);
-const isBlacklisted = cachedBlackList.includes(window.location.origin);
-
-let rulesArray = GM_getValue("cachedRules", []);
-
-if (!isBlacklisted && window.top === window.self) {
-  let combinedCover = [];
-  let combinedHide = [];
-  let combinedStyle = [];
-
-  rulesArray.forEach((v) => {
-    const ruleHost = (v.host || "").replace(/^https?:\/\//, "").replace(/\/$/, "");
-    if (isMatch(ruleHost, currentHost)) {
-      if (v.selectorList) combinedCover.push(...v.selectorList);
-      if (v.displayNoneSelectorList) combinedHide.push(...v.displayNoneSelectorList);
-      if (v.customStyleList) combinedStyle.push(...v.customStyleList);
-    }
-  });
-
-  if (combinedCover.length > 0 || combinedHide.length > 0 || combinedStyle.length > 0) {
-    applyAdblockRulesSync(combinedCover, combinedHide, combinedStyle);
-    console.log(`[Dynamic Ad Blocker] 극초기 캐시 적용 완료 (흰색덮기: ${combinedCover.length}, 영역제거: ${combinedHide.length})`);
+  if (window.fetch) {
+    const originalFetch = window.fetch;
+    window.fetch = function(input, init) {
+      const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : '');
+      if (url && uniqueBlockDomains.some(domain => url.includes(domain))) {
+        console.log(`[Dynamic Ad Blocker] Blocked fetch request: ${url}`);
+        return Promise.reject(new TypeError('Failed to fetch (Ad Blocked by Proxy)'));
+      }
+      return originalFetch.apply(this, arguments);
+    };
   }
-}
 
-// 3. 자바스크립트 API 및 DOM 런타임 프록시 차단 (이중 방어선)
-const blockDomains = [];
-const defaultDomains = [
-  'googlesyndication.com',
-  'doubleclick.net',
-  'googletagservices.com',
-  'google-analytics.com',
-  'popads.net',
-  'exoclick.com',
-  'a-ads.com'
-];
-blockDomains.push(...defaultDomains);
+  const originalXHROpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url) {
+    if (url && typeof url === 'string' && uniqueBlockDomains.some(domain => url.includes(domain))) {
+      console.log(`[Dynamic Ad Blocker] Blocked XHR request: ${url}`);
+      this.abort();
+      return;
+    }
+    return originalXHROpen.apply(this, arguments);
+  };
 
-rulesArray.forEach(rule => {
-  if (rule.blockedUrlPatterns && Array.isArray(rule.blockedUrlPatterns)) {
-    rule.blockedUrlPatterns.forEach(pattern => {
-      if (pattern && typeof pattern === 'string') {
-        const domain = pattern
-          .replace(/^\*:\/\/\*\./, '')
-          .replace(/^\*:\/\//, '')
-          .split('/')[0];
-        if (domain) {
-          blockDomains.push(domain);
+  // Element.prototype.setAttribute 안전 차단
+  if (typeof Element !== 'undefined' && Element.prototype && Element.prototype.setAttribute) {
+    const origSetAttribute = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function(name, value) {
+      if (name && typeof name === 'string' && name.toLowerCase() === 'src') {
+        const strVal = typeof value === 'string' ? value : String(value || '');
+        if (strVal && uniqueBlockDomains.some(domain => strVal.includes(domain))) {
+          console.log(`[Dynamic Ad Blocker] Blocked setAttribute(src): ${strVal}`);
+          return;
         }
       }
-    });
+      return origSetAttribute.apply(this, arguments);
+    };
   }
-});
 
-const uniqueBlockDomains = Array.from(new Set(blockDomains));
+  // HTMLScriptElement, HTMLImageElement, HTMLIFrameElement prototype.src 안전 훅
+  function hookElementSrc(elementClass) {
+    if (typeof elementClass === 'undefined' || !elementClass || !elementClass.prototype) return;
+    const desc = Object.getOwnPropertyDescriptor(elementClass.prototype, 'src');
+    if (!desc || !desc.set || !desc.get) return;
 
-if (window.fetch) {
-  const originalFetch = window.fetch;
-  window.fetch = function(input, init) {
-    const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : '');
-    if (url && uniqueBlockDomains.some(domain => url.includes(domain))) {
-      console.log(`[Dynamic Ad Blocker] Blocked fetch request: ${url}`);
-      return Promise.reject(new TypeError('Failed to fetch (Ad Blocked by Proxy)'));
-    }
-    return originalFetch.apply(this, arguments);
-  };
-}
-
-const originalXHROpen = XMLHttpRequest.prototype.open;
-XMLHttpRequest.prototype.open = function(method, url) {
-  if (url && typeof url === 'string' && uniqueBlockDomains.some(domain => url.includes(domain))) {
-    console.log(`[Dynamic Ad Blocker] Blocked XHR request: ${url}`);
-    this.abort();
-    return;
-  }
-  return originalXHROpen.apply(this, arguments);
-};
-
-// Element.prototype.setAttribute 안전 차단
-if (typeof Element !== 'undefined' && Element.prototype && Element.prototype.setAttribute) {
-  const origSetAttribute = Element.prototype.setAttribute;
-  Element.prototype.setAttribute = function(name, value) {
-    if (name && typeof name === 'string' && name.toLowerCase() === 'src') {
-      const strVal = typeof value === 'string' ? value : String(value || '');
-      if (strVal && uniqueBlockDomains.some(domain => strVal.includes(domain))) {
-        console.log(`[Dynamic Ad Blocker] Blocked setAttribute(src): ${strVal}`);
-        return;
-      }
-    }
-    return origSetAttribute.apply(this, arguments);
-  };
-}
-
-// HTMLScriptElement, HTMLImageElement, HTMLIFrameElement prototype.src 안전 훅
-function hookElementSrc(elementClass) {
-  if (typeof elementClass === 'undefined' || !elementClass || !elementClass.prototype) return;
-  const desc = Object.getOwnPropertyDescriptor(elementClass.prototype, 'src');
-  if (!desc || !desc.set || !desc.get) return;
-
-  Object.defineProperty(elementClass.prototype, 'src', {
-    get: function() {
-      try {
-        const val = desc.get.call(this);
-        return typeof val === 'string' ? val : String(val || '');
-      } catch (e) {
-        return '';
-      }
-    },
-    set: function(val) {
-      const strVal = typeof val === 'string' ? val : String(val || '');
-      if (strVal && uniqueBlockDomains.some(domain => strVal.includes(domain))) {
-        console.log(`[Dynamic Ad Blocker] Blocked prototype setter(src): ${strVal}`);
-        return;
-      }
-      try {
-        return desc.set.call(this, val);
-      } catch (e) {}
-    },
-    configurable: true,
-    enumerable: desc.enumerable
-  });
-}
-
-try {
-  if (typeof HTMLScriptElement !== 'undefined') hookElementSrc(HTMLScriptElement);
-  if (typeof HTMLImageElement !== 'undefined') hookElementSrc(HTMLImageElement);
-  if (typeof HTMLIFrameElement !== 'undefined') hookElementSrc(HTMLIFrameElement);
-} catch (e) {}
-
-// (4) HTML 파서에 의해 삽입되는 정적 리소스 태그 관찰 차단 (MutationObserver)
-const domObserver = new MutationObserver((mutations) => {
-  mutations.forEach(mutation => {
-    mutation.addedNodes.forEach(node => {
-      if (node.nodeType === 1) {
-        const tag = node.tagName.toLowerCase();
-        if (tag === 'script' || tag === 'iframe' || tag === 'img') {
-          const src = node.src || node.getAttribute('src');
-          if (src && typeof src === 'string' && uniqueBlockDomains.some(domain => src.includes(domain))) {
-            console.log(`[Dynamic Ad Blocker] Blocked static node via Observer: <${tag} src="${src}">`);
-            node.removeAttribute('src');
-            node.remove();
-          }
+    Object.defineProperty(elementClass.prototype, 'src', {
+      get: function() {
+        try {
+          const val = desc.get.call(this);
+          return typeof val === 'string' ? val : String(val || '');
+        } catch (e) {
+          return '';
         }
-        
-        const subResources = node.querySelectorAll('script, iframe, img');
-        subResources.forEach(sub => {
-          const src = sub.src || sub.getAttribute('src');
-          if (src && typeof src === 'string' && uniqueBlockDomains.some(domain => src.includes(domain))) {
-            console.log(`[Dynamic Ad Blocker] Blocked static subnode via Observer: <${sub.tagName} src="${src}">`);
-            sub.removeAttribute('src');
-            sub.remove();
+      },
+      set: function(val) {
+        const strVal = typeof val === 'string' ? val : String(val || '');
+        if (strVal && uniqueBlockDomains.some(domain => strVal.includes(domain))) {
+          console.log(`[Dynamic Ad Blocker] Blocked prototype setter(src): ${strVal}`);
+          return;
+        }
+        try {
+          return desc.set.call(this, val);
+        } catch (e) {}
+      },
+      configurable: true,
+      enumerable: desc.enumerable
+    });
+  }
+
+  try {
+    if (typeof HTMLScriptElement !== 'undefined') hookElementSrc(HTMLScriptElement);
+    if (typeof HTMLImageElement !== 'undefined') hookElementSrc(HTMLImageElement);
+    if (typeof HTMLIFrameElement !== 'undefined') hookElementSrc(HTMLIFrameElement);
+  } catch (e) {}
+
+  // (4) HTML 파서에 의해 삽입되는 정적 리소스 태그 관찰 차단 (MutationObserver)
+  const domObserver = new MutationObserver((mutations) => {
+    mutations.forEach(mutation => {
+      mutation.addedNodes.forEach(node => {
+        if (node.nodeType === 1) {
+          const tag = node.tagName.toLowerCase();
+          if (tag === 'script' || tag === 'iframe' || tag === 'img') {
+            const src = node.src || node.getAttribute('src');
+            if (src && typeof src === 'string' && uniqueBlockDomains.some(domain => src.includes(domain))) {
+              console.log(`[Dynamic Ad Blocker] Blocked static node via Observer: <${tag} src="${src}">`);
+              node.removeAttribute('src');
+              node.remove();
+            }
           }
-        });
-      }
+          
+          const subResources = node.querySelectorAll('script, iframe, img');
+          subResources.forEach(sub => {
+            const src = sub.src || sub.getAttribute('src');
+            if (src && typeof src === 'string' && uniqueBlockDomains.some(domain => src.includes(domain))) {
+              console.log(`[Dynamic Ad Blocker] Blocked static subnode via Observer: <${sub.tagName} src="${src}">`);
+              sub.removeAttribute('src');
+              sub.remove();
+            }
+          });
+        }
+      });
     });
   });
-});
 
-const startDomObserver = () => {
-  const target = document.body || document.documentElement;
-  if (target) {
-    domObserver.observe(target, {
-      childList: true,
-      subtree: true
-    });
-  } else {
-    setTimeout(startDomObserver, 10);
-  }
-};
-startDomObserver();
+  const startDomObserver = () => {
+    const target = document.body || document.documentElement;
+    if (target) {
+      domObserver.observe(target, {
+        childList: true,
+        subtree: true
+      });
+    } else {
+      setTimeout(startDomObserver, 10);
+    }
+  };
+  startDomObserver();
+}
 
 async function main() {
   if (window.top !== window.self) return;
@@ -4013,53 +4271,6 @@ function deduplicateShortcutList(list) {
     startElementPicker((sel, el) => handleSelectorAdd(sel, 'displayNone', el));
   }
 
-  async function handleBlacklistClick() {
-    const gistConfig = getGistConfig();
-    if (!gistConfig.gistId || !gistConfig.token) {
-      Toast.show("Gist 설정 정보가 없습니다. 먼저 Gist ID와 Token을 설정해주세요.");
-      showGistConfigModal();
-      return;
-    }
-
-    const blackListGist = useGist(
-      gistConfig.gistId, 
-      gistConfig.token,
-      gistConfig.blackListFileName || "ad_selector_blacklist.json",
-    );
-    const list = (await blackListGist.get()) || [];
-    list.push(window.location.origin);
-    const uniqueList = Array.from(new Set(list.map(JSON.stringify))).map((e) => JSON.parse(e));
-    await blackListGist.set(uniqueList);
-    GM_setValue("cachedBlackList", uniqueList);
-    Toast.show('성공적으로 블랙리스트에 추가되었습니다.');
-    setTimeout(() => {
-      window.location.reload();
-    }, 1000);
-  }
-
-  async function handleBlacklistReleaseClick() {
-    const gistConfig = getGistConfig();
-    if (!gistConfig.gistId || !gistConfig.token) {
-      Toast.show("Gist 설정 정보가 없습니다. 먼저 Gist ID와 Token을 설정해주세요.");
-      showGistConfigModal();
-      return;
-    }
-
-    const blackListGist = useGist(
-      gistConfig.gistId, 
-      gistConfig.token,
-      gistConfig.blackListFileName || "ad_selector_blacklist.json",
-    );
-    const list = (await blackListGist.get()) || [];
-    const updatedList = list.filter(origin => origin !== window.location.origin);
-    await blackListGist.set(updatedList);
-    GM_setValue("cachedBlackList", updatedList);
-    Toast.show('성공적으로 블랙리스트에서 제외되었습니다. 적용을 위해 페이지를 새로고침합니다.');
-    setTimeout(() => {
-      window.location.reload();
-    }, 1000);
-  }
-
   window.__adblock_toggleBlacklist = () => {
     const isCurBlacklisted = typeof checkIsBlacklisted === 'function' ? checkIsBlacklisted() : false;
     if (isCurBlacklisted) {
@@ -4878,4 +5089,22 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
   checkAndApply(rulesArray);
 }
 
-main();
+// ==========================================================================
+// 🚀 Dynamic Ad Blocker 실행 진입점 (블랙리스트 엄격 제어)
+// ==========================================================================
+const isCurrentFrameBlacklisted = checkIsBlacklisted();
+
+if (isCurrentFrameBlacklisted) {
+  console.log(`[Dynamic Ad Blocker] ⛔ 블랙리스트 등록 사이트(또는 상위 프레임이 블랙리스트)로 감지되었습니다. 모든 adblocker 기능이 비활성화됩니다. (${window.location.href})`);
+  if (window.top === window.self) {
+    registerTampermonkeyMenuCommands(true);
+  }
+} else {
+  if (window.top === window.self) {
+    registerTampermonkeyMenuCommands(false);
+  }
+  initEventListenerTracker();
+  initRuntimeAdblockHooks();
+  main();
+}
+
