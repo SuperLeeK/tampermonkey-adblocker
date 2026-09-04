@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202609031730
+// @version      202609040940
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -689,9 +689,9 @@ function getAuthConfigForHost(hostname) {
   return null;
 }
 
-function startAuthConfigPicker(targetInputId, modalContainer) {
+function startAuthConfigPicker(targetInputId, modalContainer, fieldName = "선택자") {
   if (typeof Toast !== "undefined" && Toast.show) {
-    Toast.show("🎯 요소를 클릭하면 선택자가 자동 입력됩니다. (ESC로 취소)");
+    Toast.show(`🎯 [${fieldName}] 요소를 클릭하세요. (취소: ESC)`);
   }
   
   if (modalContainer) modalContainer.style.display = "none";
@@ -701,14 +701,15 @@ function startAuthConfigPicker(targetInputId, modalContainer) {
     overlay = document.createElement("div");
     overlay.id = "adblock-auth-picker-overlay";
     overlay.style.cssText = `
-      position: fixed;
+      position: absolute;
       pointer-events: none;
       z-index: 2147483646;
       border: 2px dashed #06b6d4;
-      background: rgba(6, 182, 212, 0.15);
+      background: rgba(6, 182, 212, 0.22);
       box-shadow: 0 0 10px rgba(6, 182, 212, 0.5);
       transition: all 0.05s ease;
       display: none;
+      box-sizing: border-box;
     `;
     (document.body || document.documentElement).appendChild(overlay);
   }
@@ -718,13 +719,16 @@ function startAuthConfigPicker(targetInputId, modalContainer) {
 
   function onMouseMove(e) {
     const target = e.target;
-    if (!target || target === overlay || target.closest('#adblock-ui-group') || target.closest('#adblock-auth-modal')) {
+    if (!target || target === overlay || target.closest('#adblock-ui-group') || target.closest('#adblock-auth-modal') || target.closest('#adblock-selector-modal')) {
       overlay.style.display = "none";
       return;
     }
     const rect = target.getBoundingClientRect();
-    overlay.style.left = `${rect.left + window.scrollX}px`;
-    overlay.style.top = `${rect.top + window.scrollY}px`;
+    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+    const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+    overlay.style.position = "absolute";
+    overlay.style.left = `${rect.left + scrollLeft}px`;
+    overlay.style.top = `${rect.top + scrollTop}px`;
     overlay.style.width = `${rect.width}px`;
     overlay.style.height = `${rect.height}px`;
     overlay.style.display = "block";
@@ -733,21 +737,35 @@ function startAuthConfigPicker(targetInputId, modalContainer) {
   function onClick(e) {
     e.preventDefault();
     e.stopPropagation();
+    e.stopImmediatePropagation();
     
     const target = e.target;
     cleanup();
     
-    if (target && target !== overlay && !target.closest('#adblock-ui-group') && !target.closest('#adblock-auth-modal')) {
-      const sel = getUniqueSelector(target);
-      const inputEl = document.getElementById(targetInputId);
-      if (inputEl) {
-        inputEl.value = sel;
-        if (typeof Toast !== "undefined" && Toast.show) {
-          Toast.show(`🎯 선택자 추출 완료: ${sel}`);
+    if (target && target !== overlay && !target.closest('#adblock-ui-group') && !target.closest('#adblock-auth-modal') && !target.closest('#adblock-selector-modal')) {
+      const initialSel = getUniqueSelector(target);
+      showSelectorModal({
+        initialElement: target,
+        initialSelector: initialSel,
+        type: 'auth',
+        authTitle: fieldName,
+        onConfirm: (result) => {
+          const inputEl = document.getElementById(targetInputId);
+          if (inputEl && result && result.selector) {
+            inputEl.value = result.selector;
+            if (typeof Toast !== "undefined" && Toast.show) {
+              Toast.show(`🎯 [${fieldName}] 선택자 적용: ${result.selector}`);
+            }
+          }
+          if (modalContainer) modalContainer.style.display = "block";
+        },
+        onCancel: () => {
+          if (modalContainer) modalContainer.style.display = "block";
         }
-      }
+      });
+    } else {
+      if (modalContainer) modalContainer.style.display = "block";
     }
-    if (modalContainer) modalContainer.style.display = "block";
   }
 
   function onKeyDown(e) {
@@ -862,7 +880,7 @@ function showAuthConfigModal() {
         </div>
         <div>
           <label style="display: block; margin-bottom: 4px; font-weight: 600; color: #e4e4e7;">저장할 비밀번호 (PW)</label>
-          <input type="password" id="adblock-auth-password" value="${initialConfig.password || ''}" placeholder="비밀번호 입력" style="width: 100%; background: #27272a; border: 1px solid #3f3f46; color: #fff; border-radius: 6px; padding: 6px 10px; box-sizing: border-box;" />
+          <input type="text" id="adblock-auth-password" value="${initialConfig.password || ''}" placeholder="비밀번호 입력" style="width: 100%; background: #27272a; border: 1px solid #3f3f46; color: #fff; border-radius: 6px; padding: 6px 10px; box-sizing: border-box;" />
         </div>
       </div>
     </div>
@@ -891,9 +909,9 @@ function showAuthConfigModal() {
 
   document.getElementById("adblock-auth-close-btn").onclick = () => modalContainer.remove();
   
-  document.getElementById("adblock-auth-pick-id").onclick = () => startAuthConfigPicker("adblock-auth-id-sel", modalContainer);
-  document.getElementById("adblock-auth-pick-pw").onclick = () => startAuthConfigPicker("adblock-auth-pw-sel", modalContainer);
-  document.getElementById("adblock-auth-pick-btn").onclick = () => startAuthConfigPicker("adblock-auth-btn-sel", modalContainer);
+  document.getElementById("adblock-auth-pick-id").onclick = () => startAuthConfigPicker("adblock-auth-id-sel", modalContainer, "아이디(ID)");
+  document.getElementById("adblock-auth-pick-pw").onclick = () => startAuthConfigPicker("adblock-auth-pw-sel", modalContainer, "비밀번호(PW)");
+  document.getElementById("adblock-auth-pick-btn").onclick = () => startAuthConfigPicker("adblock-auth-btn-sel", modalContainer, "로그인 버튼");
 
   document.getElementById("adblock-auth-save-btn").onclick = async () => {
     const gistConfig = getGistConfig();
@@ -3182,6 +3200,721 @@ function initRuntimeAdblockHooks() {
   startDomObserver();
 }
 
+function showSelectorModal({ initialElement, initialSelector, type, authTitle, onConfirm, onCancel }) {
+  const existingModal = document.getElementById("adblock-selector-modal");
+  if (existingModal) existingModal.remove();
+
+  let highlightContainer = document.getElementById("adblock-modal-highlight-container");
+  if (!highlightContainer) {
+    highlightContainer = document.createElement("div");
+    highlightContainer.id = "adblock-modal-highlight-container";
+    highlightContainer.style.cssText = `
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 0;
+      pointer-events: none;
+      z-index: 1000000;
+    `;
+    document.body.appendChild(highlightContainer);
+  }
+
+  let elementStack = initialElement ? [initialElement] : [];
+  if (elementStack.length === 0 && initialSelector) {
+    try {
+      const found = querySelectorAllExtended(initialSelector);
+      if (found.length > 0 && found[0]) {
+        elementStack = [found[0]];
+      }
+    } catch (e) {}
+  }
+  let currentIndex = 0;
+  const isAuthType = type === 'auth';
+  const isShortcutType = type === 'shortcut';
+  const isCoverType = type === 'cover';
+  const isStyleType = type === 'style';
+
+  const actionName = isAuthType
+    ? (authTitle ? `${authTitle}` : '로그인 선택자')
+    : (isShortcutType
+      ? '단축키 지정'
+      : (type === 'displayNone'
+        ? '영역 제거(display:none)'
+        : (type === 'style' ? '스타일 주입' : '색상 덮기')));
+
+  const headerTitleColor = isAuthType
+    ? '#06b6d4'
+    : (isShortcutType ? '#cba6f7' : '#ff9800');
+
+  const highlightBorder = isAuthType
+    ? '2px dashed #06b6d4'
+    : (isShortcutType ? '2px dashed #cba6f7' : '2px dashed #ff9800');
+
+  const highlightBg = isAuthType
+    ? 'rgba(6, 182, 212, 0.22)'
+    : (isShortcutType ? 'rgba(203, 166, 247, 0.22)' : 'rgba(255, 152, 0, 0.18)');
+
+  const defaultSel = initialSelector || (elementStack[0] ? (generateCandidateSelectors(elementStack[0])[0] || getUniqueSelector(elementStack[0])) : '선택자');
+  const defaultFuncCode = `document.querySelector("${defaultSel}").click();`;
+
+  function createHighlightBox(rect) {
+    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+    const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+
+    const box = document.createElement("div");
+    box.style.cssText = `
+      position: absolute;
+      pointer-events: none;
+      z-index: 1000000;
+      border: ${highlightBorder};
+      background-color: ${highlightBg};
+      box-sizing: border-box;
+      transition: all 0.15s ease-out;
+      width: ${rect.width}px;
+      height: ${rect.height}px;
+      top: ${rect.top + scrollTop}px;
+      left: ${rect.left + scrollLeft}px;
+    `;
+    return box;
+  }
+
+  function updateMultiOverlay(selectorStr, fallbackEl) {
+    if (!highlightContainer) return;
+    highlightContainer.innerHTML = "";
+
+    let targetElements = [];
+    const cleanSelector = selectorStr ? normalizeWildcardSelector(selectorStr.trim()) : "";
+
+    if (cleanSelector) {
+      try {
+        const found = querySelectorAllExtended(cleanSelector);
+        targetElements = found.filter(el => {
+          if (!el || !el.getBoundingClientRect) return false;
+          if (modalContainer && modalContainer.contains(el)) return false;
+          if (highlightContainer.contains(el)) return false;
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        });
+      } catch (e) {}
+    }
+
+    if (targetElements.length === 0 && fallbackEl && fallbackEl.getBoundingClientRect) {
+      if (document.body.contains(fallbackEl)) {
+        targetElements = [fallbackEl];
+      }
+    }
+
+    const renderList = targetElements.slice(0, 100);
+    const frag = document.createDocumentFragment();
+
+    renderList.forEach(el => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        frag.appendChild(createHighlightBox(rect));
+      }
+    });
+
+    highlightContainer.appendChild(frag);
+  }
+
+  const modalContainer = document.createElement("div");
+  modalContainer.id = "adblock-selector-modal";
+  modalContainer.style.cssText = `
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 1000002;
+    width: 400px;
+    max-width: calc(100vw - 32px);
+    background: #18181b;
+    color: #f4f4f5;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    overflow: hidden;
+    box-sizing: border-box;
+  `;
+
+  let livePreviewStyle = document.getElementById("adblock-live-style-preview");
+  if (!livePreviewStyle) {
+    livePreviewStyle = document.createElement("style");
+    livePreviewStyle.id = "adblock-live-style-preview";
+    (document.head || document.documentElement).appendChild(livePreviewStyle);
+  }
+
+  modalContainer.innerHTML = `
+    <div id="adblock-modal-resizer-left" style="position: absolute; left: 0; top: 0; width: 6px; height: 100%; cursor: ew-resize; z-index: 10;" title="드래그하여 너비 조절"></div>
+    <div style="padding: 12px 16px; background: rgba(255, 255, 255, 0.05); border-bottom: 1px solid rgba(255, 255, 255, 0.1); display: flex; justify-content: space-between; align-items: center; user-select: none;">
+      <span style="font-weight: 600; font-size: 13px; color: ${headerTitleColor};">[${actionName}] 선택자 지정</span>
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <button id="adblock-modal-toggle-pos" style="background: none; border: none; color: #a1a1aa; font-size: 13px; cursor: pointer; padding: 2px 4px; line-height: 1;" title="상단/하단 위치 전환">⬆️</button>
+        <button id="adblock-modal-maximize" style="background: none; border: none; color: #a1a1aa; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; justify-content: center; line-height: 1;" title="높이 최대화 / 원래대로">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+        </button>
+        <button id="adblock-modal-close" style="background: none; border: none; color: #a1a1aa; font-size: 18px; cursor: pointer; padding: 0 4px; line-height: 1;" title="닫기">&times;</button>
+      </div>
+    </div>
+    <div id="adblock-modal-body-container" style="padding: 14px 16px; display: flex; flex-direction: column; flex: 1; overflow: hidden;">
+      <div style="margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+        <span style="color: #a1a1aa; font-size: 12px; font-weight: 500;">요소 탐색:</span>
+        <div style="display: flex; gap: 4px;">
+          <button id="adblock-modal-parent-btn" style="padding: 5px 8px; background: #27272a; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-size: 11px; cursor: pointer; font-weight: 500; display: flex; align-items: center; gap: 2px;" title="부모 요소로 이동">
+            ▲ 부모
+          </button>
+          <button id="adblock-modal-child-btn" style="padding: 5px 8px; background: #27272a; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-size: 11px; cursor: pointer; font-weight: 500; display: flex; align-items: center; gap: 2px;" disabled title="자식 요소로 이동">
+            ▼ 자식
+          </button>
+          <button id="adblock-modal-prev-btn" style="padding: 5px 8px; background: #27272a; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-size: 11px; cursor: pointer; font-weight: 500; display: flex; align-items: center; gap: 2px;" disabled title="이전 형제 요소로 이동">
+            ◀ 이전
+          </button>
+          <button id="adblock-modal-next-btn" style="padding: 5px 8px; background: #27272a; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-size: 11px; cursor: pointer; font-weight: 500; display: flex; align-items: center; gap: 2px;" disabled title="다음 형제 요소로 이동">
+            ▶ 다음
+          </button>
+        </div>
+      </div>
+      <div id="adblock-modal-info" style="margin-bottom: 12px; padding: 6px 8px; background: #09090b; border-radius: 6px; font-size: 11px; color: #a1a1aa; font-family: monospace; border: 1px solid #27272a; height: 100px; max-height: 100px; overflow-y: auto; box-sizing: border-box; transition: flex 0.15s ease; scrollbar-width: none; -ms-overflow-style: none;">
+      </div>
+      <div style="margin-bottom: 10px;">
+        <label style="display: block; color: #a1a1aa; font-size: 12px; margin-bottom: 4px; font-weight: 500;">선택자 (Selector):</label>
+        <input type="text" id="adblock-modal-input" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #4ade80; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none;" value="" />
+      </div>
+      <div style="margin-bottom: 10px; width: 100%; max-width: 100%; box-sizing: border-box; overflow: hidden;">
+        <label style="display: block; color: #a1a1aa; font-size: 11px; margin-bottom: 4px; font-weight: 500;">추천 선택자 목록 (선택 시 자동 적용):</label>
+        <select id="adblock-modal-candidate-select" style="width: 100%; max-width: 100%; box-sizing: border-box; height: 38px; padding: 6px 30px 6px 10px; background-color: #09090b; color: #4ade80; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none; cursor: pointer; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; display: block;">
+        </select>
+      </div>
+      ${isCoverType ? `
+      <div style="margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between;">
+        <label style="color: #a1a1aa; font-size: 12px; font-weight: 500;">덮을 배경 색상:</label>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <input type="color" id="adblock-modal-cover-color" value="#ffffff" style="width: 38px; height: 30px; padding: 1px 2px; background: #09090b; border: 1px solid #3f3f46; border-radius: 6px; cursor: pointer; vertical-align: middle;" title="색상 선택 (클릭 시 팔레트 표시)" />
+          <button type="button" id="adblock-modal-eyedropper-btn" style="padding: 5px 10px; background: #27272a; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 4px; font-weight: 500;" title="화면에서 마우스로 색상 추출">
+            💧 스포이드
+          </button>
+        </div>
+      </div>
+      ` : ''}
+      ${isShortcutType ? `
+      <div style="margin-bottom: 14px;">
+        <label style="display: block; color: #a1a1aa; font-size: 12px; margin-bottom: 4px; font-weight: 500;">할당할 단축키 (Key):</label>
+        <input type="text" id="adblock-modal-shortcut-key-input" placeholder="예: a 또는 d 또는 ArrowLeft" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #cba6f7; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; font-weight: bold; outline: none;" value="" />
+      </div>
+      <div id="adblock-modal-code-wrapper" style="margin-bottom: 14px;">
+        <label style="display: block; color: #cba6f7; font-size: 12px; margin-bottom: 4px; font-weight: 500;">실행할 JS/JSX 코드 (Function):</label>
+        <textarea id="adblock-modal-code-input" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #cba6f7; border: 1px solid #cba6f7; border-radius: 6px; font-family: monospace; font-size: 11px; outline: none; height: 75px; resize: vertical;">${defaultFuncCode}</textarea>
+      </div>
+      ` : ''}
+      ${isStyleType ? `
+      <div style="margin-bottom: 14px;">
+        <label style="display: block; color: #a1a1aa; font-size: 12px; margin-bottom: 4px; font-weight: 500;">주입할 CSS 스타일 (Style):</label>
+        <textarea id="adblock-modal-style-input" placeholder="예: background: red !important; opacity: 0.5;" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #ffab40; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none; height: 55px; resize: vertical;"></textarea>
+      </div>
+      ` : ''}
+      ${!isAuthType ? `
+      <div style="margin-top: 10px; margin-bottom: 14px;">
+        <label style="display: flex; align-items: center; gap: 8px; color: #a1a1aa; font-size: 12px; cursor: pointer; user-select: none; line-height: 1.3;" title="도메인의 숫자 부분을 * 와일드카드로 저장하여 넘버링 도메인에 동시 적용">
+          <input type="checkbox" id="adblock-modal-domain-wildcard" style="width: 16px; height: 16px; min-width: 16px; min-height: 16px; accent-color: #ff9800; cursor: pointer; flex-shrink: 0; margin: 0;" ${hasNumericDomain(window.location.host || window.location.hostname) ? 'checked' : ''} />
+          <span style="display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; line-height: 1.3;">와일드카드 도메인 적용 <span style="color: #ffab40; font-family: monospace; font-size: 11px;">(${getWildcardDomain(window.location.host || window.location.hostname)})</span></span>
+        </label>
+      </div>
+      ` : ''}
+      <div style="display: flex; justify-content: flex-end; gap: 8px;">
+        <button id="adblock-modal-cancel" style="padding: 6px 14px; background: #27272a; color: #d4d4d8; border: 1px solid #3f3f46; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 500; white-space: nowrap;">취소</button>
+        <button id="adblock-modal-confirm" style="padding: 6px 16px; background: ${isAuthType ? '#06b6d4' : (isShortcutType ? '#cba6f7' : '#ff9800')}; color: ${isAuthType ? '#ffffff' : '#09090b'}; font-weight: 600; border: none; border-radius: 6px; font-size: 12px; cursor: pointer; white-space: nowrap;">확인 및 적용</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modalContainer);
+
+  const parentBtn = modalContainer.querySelector("#adblock-modal-parent-btn");
+  const childBtn = modalContainer.querySelector("#adblock-modal-child-btn");
+  const prevBtn = modalContainer.querySelector("#adblock-modal-prev-btn");
+  const nextBtn = modalContainer.querySelector("#adblock-modal-next-btn");
+  const maxBtn = modalContainer.querySelector("#adblock-modal-maximize");
+  const togglePosBtn = modalContainer.querySelector("#adblock-modal-toggle-pos");
+  const resizerLeft = modalContainer.querySelector("#adblock-modal-resizer-left");
+  const inputEl = modalContainer.querySelector("#adblock-modal-input");
+  const infoEl = modalContainer.querySelector("#adblock-modal-info");
+  const confirmBtn = modalContainer.querySelector("#adblock-modal-confirm");
+  const cancelBtn = modalContainer.querySelector("#adblock-modal-cancel");
+  const closeBtn = modalContainer.querySelector("#adblock-modal-close");
+
+  let isTopPos = false;
+  togglePosBtn.onclick = () => {
+    isTopPos = !isTopPos;
+    if (isTopPos) {
+      modalContainer.style.bottom = "auto";
+      modalContainer.style.top = "30px";
+      togglePosBtn.innerText = "⬇️";
+    } else {
+      modalContainer.style.top = "auto";
+      modalContainer.style.bottom = "24px";
+      togglePosBtn.innerText = "⬆️";
+    }
+  };
+  const styleInput = isStyleType ? modalContainer.querySelector("#adblock-modal-style-input") : null;
+  const colorInput = isCoverType ? modalContainer.querySelector("#adblock-modal-cover-color") : null;
+  const eyedropperBtn = isCoverType ? modalContainer.querySelector("#adblock-modal-eyedropper-btn") : null;
+
+  if (eyedropperBtn && colorInput) {
+    eyedropperBtn.onclick = async () => {
+      if (!window.EyeDropper) {
+        if (typeof Toast !== "undefined" && Toast.show) {
+          Toast.show("⚠️ 현재 브라우저는 스포이드(EyeDropper) API를 지원하지 않습니다.");
+        } else {
+          alert("현재 브라우저는 스포이드(EyeDropper) API를 지원하지 않습니다.");
+        }
+        return;
+      }
+      try {
+        const eyeDropper = new EyeDropper();
+        const result = await eyeDropper.open();
+        if (result && result.sRGBHex) {
+          colorInput.value = result.sRGBHex;
+          updateLiveStylePreview();
+        }
+      } catch (e) {
+        // ESC 등으로 취소 시 무시
+      }
+    };
+
+    colorInput.oninput = () => {
+      updateLiveStylePreview();
+    };
+  }
+
+  if (inputEl) {
+    inputEl.oninput = () => {
+      const curVal = inputEl.value.trim();
+      if (isShortcutType && codeInput) {
+        const currentCode = codeInput.value.trim();
+        if (!currentCode || currentCode.includes('document.querySelector(')) {
+          codeInput.value = `document.querySelector("${curVal}").click();`;
+        }
+      }
+      const curEl = elementStack[currentIndex];
+      updateMultiOverlay(curVal, curEl);
+      updateLiveStylePreview();
+    };
+  }
+
+  function updateLiveStylePreview() {
+    const selVal = normalizeWildcardSelector(inputEl.value.trim());
+    if (!selVal || isExtendedSelector(selVal)) {
+      livePreviewStyle.textContent = '';
+      return;
+    }
+    if (isStyleType && styleInput) {
+      const cssText = styleInput.value.trim();
+      livePreviewStyle.textContent = cssText ? `${selVal} { ${cssText} }` : '';
+    } else if (isCoverType && colorInput) {
+      const coverColor = colorInput.value || '#ffffff';
+      livePreviewStyle.textContent = `${selVal} { position: relative !important; overflow: hidden !important; }\n${selVal}::after { content: '' !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; background-color: ${coverColor} !important; z-index: 99999 !important; pointer-events: auto !important; }`;
+    } else {
+      livePreviewStyle.textContent = '';
+    }
+  }
+
+  inputEl.value = initialSelector || '';
+
+  function createTreeItem(el, indentLevel, isCurrent, type) {
+    const row = document.createElement('div');
+    row.className = isCurrent ? 'adblock-tree-item adblock-tree-active' : 'adblock-tree-item';
+    
+    const tag = el.tagName ? el.tagName.toLowerCase() : '';
+    const idStr = el.id ? `#${el.id}` : '';
+    const classStr = el.className && typeof el.className === 'string' ? `.${el.className.trim().split(/\s+/).join('.')}` : '';
+    
+    row.style.cssText = `
+      padding: 3px 6px;
+      padding-left: ${indentLevel * 12 + 6}px;
+      cursor: pointer;
+      border-radius: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: background 0.1s;
+      margin-bottom: 2px;
+      user-select: none;
+      ${isCurrent ? (isAuthType ? 'background: rgba(6, 182, 212, 0.25); color: #22d3ee; font-weight: bold; border-left: 3px solid #06b6d4;' : (isShortcutType ? 'background: rgba(203, 166, 247, 0.25); color: #cba6f7; font-weight: bold; border-left: 3px solid #cba6f7;' : 'background: rgba(255, 152, 0, 0.25); color: #ffab40; font-weight: bold; border-left: 3px solid #ff9800;')) : (type === 'anc' ? 'color: #89b4fa;' : 'color: #cdd6f4;')}
+    `;
+
+    row.onmouseenter = () => {
+      if (!isCurrent) row.style.background = 'rgba(255, 255, 255, 0.08)';
+    };
+    row.onmouseleave = () => {
+      if (!isCurrent) row.style.background = 'transparent';
+    };
+
+    const icon = isCurrent ? '▶ ' : (type === 'anc' ? '▲ ' : (type === 'child' ? '└ ' : '• '));
+    row.textContent = `${icon}<${tag}${idStr}${classStr}>`;
+    return row;
+  }
+
+  function renderTree(curEl) {
+    infoEl.innerHTML = '';
+    if (!curEl) {
+      infoEl.innerHTML = '<div style="color: #666; padding: 4px;">선택된 요소 없음 (수동 입력 중)</div>';
+      return;
+    }
+
+    const ancestors = [];
+    let parent = curEl.parentElement;
+    while (parent && parent !== document.documentElement && parent !== document.body.parentNode && ancestors.length < 3) {
+      ancestors.unshift(parent);
+      parent = parent.parentElement;
+    }
+
+    let indent = 0;
+    const frag = document.createDocumentFragment();
+
+    ancestors.forEach((ancEl) => {
+      const item = createTreeItem(ancEl, indent, false, 'anc');
+      item.onclick = () => {
+        let foundIdx = elementStack.indexOf(ancEl);
+        if (foundIdx !== -1) {
+          currentIndex = foundIdx;
+        } else {
+          elementStack.push(ancEl);
+          currentIndex = elementStack.length - 1;
+        }
+        refreshUI();
+      };
+      frag.appendChild(item);
+      indent++;
+    });
+
+    const parentEl = curEl.parentElement;
+    const siblings = parentEl ? Array.from(parentEl.children) : [curEl];
+
+    siblings.forEach((sibEl) => {
+      const isCurrent = (sibEl === curEl);
+      const item = createTreeItem(sibEl, indent, isCurrent, isCurrent ? 'cur' : 'sib');
+      item.onclick = () => {
+        if (!isCurrent) {
+          elementStack[currentIndex] = sibEl;
+          refreshUI();
+        }
+      };
+      frag.appendChild(item);
+
+      if (isCurrent && curEl.children && curEl.children.length > 0) {
+        const children = Array.from(curEl.children).slice(0, 5);
+        children.forEach((childEl) => {
+          const childItem = createTreeItem(childEl, indent + 1, false, 'child');
+          childItem.onclick = () => {
+            if (currentIndex < elementStack.length - 1) {
+              elementStack.splice(currentIndex + 1);
+            }
+            elementStack.push(childEl);
+            currentIndex++;
+            refreshUI();
+          };
+          frag.appendChild(childItem);
+        });
+        if (curEl.children.length > 5) {
+          const moreEl = document.createElement('div');
+          moreEl.style.paddingLeft = `${(indent + 1) * 12 + 6}px`;
+          moreEl.style.color = '#666';
+          moreEl.style.fontSize = '10px';
+          moreEl.style.paddingTop = '2px';
+          moreEl.textContent = `... 외 ${curEl.children.length - 5}개 자식`;
+          frag.appendChild(moreEl);
+        }
+      }
+    });
+
+    infoEl.appendChild(frag);
+
+    const activeItem = infoEl.querySelector('.adblock-tree-active');
+    if (activeItem) {
+      activeItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
+  const codeInput = isShortcutType ? modalContainer.querySelector("#adblock-modal-code-input") : null;
+  if (isShortcutType && codeInput) {
+    const defaultSel = initialSelector || (initialElement ? (generateCandidateSelectors(initialElement)[0] || getUniqueSelector(initialElement)) : '');
+    codeInput.value = `() => {\n  document.querySelector("${defaultSel}").click();\n}`;
+  }
+
+  function renderCandidateSelect(targetElement) {
+    const selectEl = modalContainer.querySelector("#adblock-modal-candidate-select");
+    if (!selectEl) return;
+    selectEl.innerHTML = "";
+
+    if (!targetElement) {
+      const opt = document.createElement("option");
+      opt.textContent = "선택된 요소 없음";
+      opt.disabled = true;
+      selectEl.appendChild(opt);
+      return;
+    }
+
+    const candidateList = generateCandidateSelectors(targetElement);
+    if (candidateList.length === 0) {
+      const opt = document.createElement("option");
+      opt.textContent = "추천 선택자 없음";
+      opt.disabled = true;
+      selectEl.appendChild(opt);
+      return;
+    }
+
+    const curInputValue = inputEl ? inputEl.value.trim() : '';
+
+    candidateList.forEach(sel => {
+      const opt = document.createElement("option");
+      opt.value = sel;
+      opt.textContent = sel.length > 70 ? sel.substring(0, 67) + "..." : sel;
+      opt.style.cssText = "background-color: #09090b; color: #4ade80;";
+      if (sel === curInputValue) {
+        opt.selected = true;
+      }
+      selectEl.appendChild(opt);
+    });
+
+    selectEl.onchange = () => {
+      const chosenVal = selectEl.value;
+      if (chosenVal && inputEl) {
+        inputEl.value = chosenVal;
+        if (isShortcutType && codeInput) {
+          codeInput.value = `document.querySelector("${chosenVal}").click();`;
+        }
+        const curEl = elementStack[currentIndex];
+        updateMultiOverlay(chosenVal, curEl);
+        updateLiveStylePreview();
+        Toast.show(`선택자 적용: ${chosenVal}`);
+      }
+    };
+  }
+
+  function refreshUI() {
+    const curEl = elementStack[currentIndex];
+    if (curEl) {
+      const candidateList = generateCandidateSelectors(curEl);
+      const bestSel = candidateList.length > 0 ? candidateList[0] : getUniqueSelector(curEl);
+      if (inputEl) inputEl.value = bestSel;
+
+      if (isShortcutType && codeInput) {
+        const currentCode = codeInput.value.trim();
+        if (!currentCode || currentCode.includes('document.querySelector(')) {
+          codeInput.value = `document.querySelector("${bestSel}").click();`;
+        }
+      }
+
+      renderTree(curEl);
+      renderCandidateSelect(curEl);
+      updateMultiOverlay(bestSel, curEl);
+
+      const canGoParent = curEl.parentElement && curEl.parentElement !== document.documentElement && curEl.parentElement !== document.body.parentNode;
+      parentBtn.disabled = !canGoParent;
+      parentBtn.style.opacity = canGoParent ? '1' : '0.4';
+      parentBtn.style.cursor = canGoParent ? 'pointer' : 'not-allowed';
+
+      const canGoPrev = !!curEl.previousElementSibling;
+      prevBtn.disabled = !canGoPrev;
+      prevBtn.style.opacity = canGoPrev ? '1' : '0.4';
+      prevBtn.style.cursor = canGoPrev ? 'pointer' : 'not-allowed';
+
+      const canGoNext = !!curEl.nextElementSibling;
+      nextBtn.disabled = !canGoNext;
+      nextBtn.style.opacity = canGoNext ? '1' : '0.4';
+      nextBtn.style.cursor = canGoNext ? 'pointer' : 'not-allowed';
+    } else {
+      renderTree(null);
+      parentBtn.disabled = true;
+      parentBtn.style.opacity = '0.4';
+      parentBtn.style.cursor = 'not-allowed';
+
+      prevBtn.disabled = true;
+      prevBtn.style.opacity = '0.4';
+      prevBtn.style.cursor = 'not-allowed';
+
+      nextBtn.disabled = true;
+      nextBtn.style.opacity = '0.4';
+      nextBtn.style.cursor = 'not-allowed';
+    }
+
+    const canGoChild = currentIndex > 0;
+    childBtn.disabled = !canGoChild;
+    childBtn.style.opacity = canGoChild ? '1' : '0.4';
+    childBtn.style.cursor = canGoChild ? 'pointer' : 'not-allowed';
+  }
+
+  refreshUI();
+
+  parentBtn.onclick = () => {
+    const curEl = elementStack[currentIndex];
+    if (!curEl) return;
+
+    if (currentIndex === elementStack.length - 1) {
+      const parent = curEl.parentElement;
+      if (parent && parent !== document.documentElement && parent !== document.body.parentNode) {
+        elementStack.push(parent);
+        currentIndex++;
+      }
+    } else {
+      currentIndex++;
+    }
+    refreshUI();
+  };
+
+  childBtn.onclick = () => {
+    if (currentIndex > 0) {
+      currentIndex--;
+      refreshUI();
+    }
+  };
+
+  prevBtn.onclick = () => {
+    const curEl = elementStack[currentIndex];
+    if (curEl && curEl.previousElementSibling) {
+      elementStack[currentIndex] = curEl.previousElementSibling;
+      refreshUI();
+    }
+  };
+
+  nextBtn.onclick = () => {
+    const curEl = elementStack[currentIndex];
+    if (curEl && curEl.nextElementSibling) {
+      elementStack[currentIndex] = curEl.nextElementSibling;
+      refreshUI();
+    }
+  };
+
+  let isMaximized = false;
+  maxBtn.onclick = () => {
+    isMaximized = !isMaximized;
+    if (isMaximized) {
+      maxBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="9" width="12" height="12" rx="1.5"/><path d="M9 9V4.5A1.5 1.5 0 0 1 10.5 3H19.5A1.5 1.5 0 0 1 21 4.5V13.5A1.5 1.5 0 0 1 19.5 15H15"/></svg>';
+      modalContainer.style.top = '24px';
+      modalContainer.style.bottom = '24px';
+      modalContainer.style.height = 'calc(100vh - 48px)';
+      modalContainer.style.display = 'flex';
+      modalContainer.style.flexDirection = 'column';
+
+      infoEl.style.height = 'auto';
+      infoEl.style.maxHeight = 'none';
+      infoEl.style.flex = '1';
+    } else {
+      maxBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>';
+      modalContainer.style.top = 'auto';
+      modalContainer.style.bottom = '24px';
+      modalContainer.style.height = 'auto';
+
+      infoEl.style.height = '100px';
+      infoEl.style.maxHeight = '100px';
+      infoEl.style.flex = 'none';
+    }
+  };
+
+  let isResizing = false;
+  let startX = 0;
+  let startWidth = 0;
+
+  resizerLeft.onmousedown = (e) => {
+    e.preventDefault();
+    isResizing = true;
+    startX = e.clientX;
+    startWidth = modalContainer.offsetWidth;
+
+    document.addEventListener("mousemove", onMouseMoveResizer);
+    document.addEventListener("mouseup", onMouseUpResizer);
+  };
+
+  function onMouseMoveResizer(e) {
+    if (!isResizing) return;
+    const dx = startX - e.clientX;
+    const newWidth = Math.max(320, Math.min(window.innerWidth - 32, startWidth + dx));
+    modalContainer.style.width = newWidth + "px";
+  }
+
+  function onMouseUpResizer() {
+    isResizing = false;
+    document.removeEventListener("mousemove", onMouseMoveResizer);
+    document.removeEventListener("mouseup", onMouseUpResizer);
+  }
+
+  inputEl.oninput = () => {
+    const curEl = elementStack[currentIndex];
+    updateMultiOverlay(inputEl.value, curEl);
+    updateLiveStylePreview();
+  };
+
+  if (styleInput) {
+    styleInput.oninput = () => {
+      updateLiveStylePreview();
+    };
+  }
+
+  let isConfirmed = false;
+  const closeModal = () => {
+    onMouseUpResizer();
+    modalContainer.remove();
+    if (highlightContainer) {
+      highlightContainer.remove();
+    }
+    if (livePreviewStyle) {
+      livePreviewStyle.remove();
+    }
+    document.removeEventListener("keydown", onModalKeyDown);
+    if (!isConfirmed && onCancel) {
+      onCancel();
+    }
+  };
+
+  const onModalKeyDown = (e) => {
+    if (e.key === "Escape") {
+      closeModal();
+    }
+  };
+  document.addEventListener("keydown", onModalKeyDown);
+
+  confirmBtn.onclick = () => {
+    const val = inputEl ? normalizeWildcardSelector(inputEl.value.trim()) : '';
+    const styleVal = isStyleType && styleInput ? styleInput.value.trim() : '';
+    const shortcutKeyInput = isShortcutType ? modalContainer.querySelector("#adblock-modal-shortcut-key-input") : null;
+    const shortcutKeyVal = shortcutKeyInput ? shortcutKeyInput.value.trim() : '';
+    const codeInput = isShortcutType ? modalContainer.querySelector("#adblock-modal-code-input") : null;
+    const codeVal = isShortcutType && codeInput ? codeInput.value.trim() : '';
+    const wildcardCheckbox = modalContainer.querySelector("#adblock-modal-domain-wildcard");
+    const useWildcard = wildcardCheckbox ? wildcardCheckbox.checked : false;
+
+    if (isShortcutType) {
+      if (!shortcutKeyVal || !codeVal) {
+        alert("할당할 단축키 키와 실행할 JS/JSX 코드는 필수 입력 항목입니다.");
+        return;
+      }
+    }
+
+    isConfirmed = true;
+    closeModal();
+    if ((val || (isShortcutType && codeVal)) && onConfirm) {
+      if (isAuthType) {
+        onConfirm({ selector: val });
+      } else if (isStyleType) {
+        onConfirm({ selector: val, style: styleVal, useWildcardDomain: useWildcard });
+      } else if (isShortcutType) {
+        const matchSel = codeVal.match(/document\.querySelector\((['"])(.*?)\1\)/);
+        const extractedSel = matchSel ? matchSel[2] : val;
+        onConfirm({ selector: extractedSel, key: shortcutKeyVal, isFunc: true, code: codeVal, useWildcardDomain: useWildcard });
+      } else if (isCoverType) {
+        const coverColor = colorInput ? colorInput.value : '#ffffff';
+        onConfirm({ selector: val, color: coverColor, useWildcardDomain: useWildcard });
+      } else {
+        onConfirm({ selector: val, useWildcardDomain: useWildcard });
+      }
+    }
+  };
+
+  cancelBtn.onclick = () => closeModal();
+  closeBtn.onclick = () => closeModal();
+}
+
 async function main() {
   if (window.top !== window.self) return;
 
@@ -3594,695 +4327,7 @@ function deduplicateShortcutList(list) {
     }
   }
 
-  function showSelectorModal({ initialElement, initialSelector, type, onConfirm }) {
-    const existingModal = document.getElementById("adblock-selector-modal");
-    if (existingModal) existingModal.remove();
 
-    let highlightContainer = document.getElementById("adblock-modal-highlight-container");
-    if (!highlightContainer) {
-      highlightContainer = document.createElement("div");
-      highlightContainer.id = "adblock-modal-highlight-container";
-      highlightContainer.style.cssText = `
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 0;
-        pointer-events: none;
-        z-index: 1000000;
-      `;
-      document.body.appendChild(highlightContainer);
-    }
-
-    let elementStack = initialElement ? [initialElement] : [];
-    if (elementStack.length === 0 && initialSelector) {
-      try {
-        const found = querySelectorAllExtended(initialSelector);
-        if (found.length > 0 && found[0]) {
-          elementStack = [found[0]];
-        }
-      } catch (e) {}
-    }
-    let currentIndex = 0;
-    const isShortcutType = type === 'shortcut';
-    const highlightBorder = isShortcutType ? '2px dashed #cba6f7' : '2px dashed #ff9800';
-    const highlightBg = isShortcutType ? 'rgba(203, 166, 247, 0.22)' : 'rgba(255, 152, 0, 0.18)';
-
-    const defaultSel = initialSelector || (elementStack[0] ? (generateCandidateSelectors(elementStack[0])[0] || getUniqueSelector(elementStack[0])) : '선택자');
-    const defaultFuncCode = `document.querySelector("${defaultSel}").click();`;
-
-    function createHighlightBox(rect) {
-      const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-      const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
-
-      const box = document.createElement("div");
-      box.style.cssText = `
-        position: absolute;
-        pointer-events: none;
-        z-index: 1000000;
-        border: ${highlightBorder};
-        background-color: ${highlightBg};
-        box-sizing: border-box;
-        transition: all 0.15s ease-out;
-        width: ${rect.width}px;
-        height: ${rect.height}px;
-        top: ${rect.top + scrollTop}px;
-        left: ${rect.left + scrollLeft}px;
-      `;
-      return box;
-    }
-
-    function updateMultiOverlay(selectorStr, fallbackEl) {
-      if (!highlightContainer) return;
-      highlightContainer.innerHTML = "";
-
-      let targetElements = [];
-      const cleanSelector = selectorStr ? normalizeWildcardSelector(selectorStr.trim()) : "";
-
-      if (cleanSelector) {
-        try {
-          const found = querySelectorAllExtended(cleanSelector);
-          targetElements = found.filter(el => {
-            if (!el || !el.getBoundingClientRect) return false;
-            if (modalContainer && modalContainer.contains(el)) return false;
-            if (highlightContainer.contains(el)) return false;
-            const r = el.getBoundingClientRect();
-            return r.width > 0 && r.height > 0;
-          });
-        } catch (e) {}
-      }
-
-      if (targetElements.length === 0 && fallbackEl && fallbackEl.getBoundingClientRect) {
-        if (document.body.contains(fallbackEl)) {
-          targetElements = [fallbackEl];
-        }
-      }
-
-      const renderList = targetElements.slice(0, 100);
-      const frag = document.createDocumentFragment();
-
-      renderList.forEach(el => {
-        const rect = el.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          frag.appendChild(createHighlightBox(rect));
-        }
-      });
-
-      highlightContainer.appendChild(frag);
-    }
-
-    const modalContainer = document.createElement("div");
-    modalContainer.id = "adblock-selector-modal";
-    modalContainer.style.cssText = `
-      position: fixed;
-      bottom: 24px;
-      right: 24px;
-      z-index: 1000002;
-      width: 400px;
-      max-width: calc(100vw - 32px);
-      background: #18181b;
-      color: #f4f4f5;
-      border-radius: 12px;
-      border: 1px solid rgba(255, 255, 255, 0.15);
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
-      font-family: system-ui, -apple-system, sans-serif;
-      font-size: 13px;
-      overflow: hidden;
-      box-sizing: border-box;
-    `;
-
-    const isCoverType = type === 'cover';
-    const actionName = isShortcutType ? '단축키 지정' : (type === 'displayNone' ? '영역 제거(display:none)' : (type === 'style' ? '스타일 주입' : '색상 덮기'));
-    const isStyleType = type === 'style';
-    const headerTitleColor = isShortcutType ? '#cba6f7' : '#ff9800';
-
-    let livePreviewStyle = document.getElementById("adblock-live-style-preview");
-    if (!livePreviewStyle) {
-      livePreviewStyle = document.createElement("style");
-      livePreviewStyle.id = "adblock-live-style-preview";
-      (document.head || document.documentElement).appendChild(livePreviewStyle);
-    }
-
-    modalContainer.innerHTML = `
-      <div id="adblock-modal-resizer-left" style="position: absolute; left: 0; top: 0; width: 6px; height: 100%; cursor: ew-resize; z-index: 10;" title="드래그하여 너비 조절"></div>
-      <div style="padding: 12px 16px; background: rgba(255, 255, 255, 0.05); border-bottom: 1px solid rgba(255, 255, 255, 0.1); display: flex; justify-content: space-between; align-items: center; user-select: none;">
-        <span style="font-weight: 600; font-size: 13px; color: ${headerTitleColor};">[${actionName}] 선택자 지정</span>
-        <div style="display: flex; align-items: center; gap: 6px;">
-          <button id="adblock-modal-toggle-pos" style="background: none; border: none; color: #a1a1aa; font-size: 13px; cursor: pointer; padding: 2px 4px; line-height: 1;" title="상단/하단 위치 전환">⬆️</button>
-          <button id="adblock-modal-maximize" style="background: none; border: none; color: #a1a1aa; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; justify-content: center; line-height: 1;" title="높이 최대화 / 원래대로">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
-          </button>
-          <button id="adblock-modal-close" style="background: none; border: none; color: #a1a1aa; font-size: 18px; cursor: pointer; padding: 0 4px; line-height: 1;" title="닫기">&times;</button>
-        </div>
-      </div>
-      <div id="adblock-modal-body-container" style="padding: 14px 16px; display: flex; flex-direction: column; flex: 1; overflow: hidden;">
-        <div style="margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
-          <span style="color: #a1a1aa; font-size: 12px; font-weight: 500;">요소 탐색:</span>
-          <div style="display: flex; gap: 4px;">
-            <button id="adblock-modal-parent-btn" style="padding: 5px 8px; background: #27272a; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-size: 11px; cursor: pointer; font-weight: 500; display: flex; align-items: center; gap: 2px;" title="부모 요소로 이동">
-              ▲ 부모
-            </button>
-            <button id="adblock-modal-child-btn" style="padding: 5px 8px; background: #27272a; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-size: 11px; cursor: pointer; font-weight: 500; display: flex; align-items: center; gap: 2px;" disabled title="자식 요소로 이동">
-              ▼ 자식
-            </button>
-            <button id="adblock-modal-prev-btn" style="padding: 5px 8px; background: #27272a; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-size: 11px; cursor: pointer; font-weight: 500; display: flex; align-items: center; gap: 2px;" disabled title="이전 형제 요소로 이동">
-              ◀ 이전
-            </button>
-            <button id="adblock-modal-next-btn" style="padding: 5px 8px; background: #27272a; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-size: 11px; cursor: pointer; font-weight: 500; display: flex; align-items: center; gap: 2px;" disabled title="다음 형제 요소로 이동">
-              ▶ 다음
-            </button>
-          </div>
-        </div>
-        <div id="adblock-modal-info" style="margin-bottom: 12px; padding: 6px 8px; background: #09090b; border-radius: 6px; font-size: 11px; color: #a1a1aa; font-family: monospace; border: 1px solid #27272a; height: 100px; max-height: 100px; overflow-y: auto; box-sizing: border-box; transition: flex 0.15s ease; scrollbar-width: none; -ms-overflow-style: none;">
-        </div>
-        <div style="margin-bottom: 10px;">
-          <label style="display: block; color: #a1a1aa; font-size: 12px; margin-bottom: 4px; font-weight: 500;">선택자 (Selector):</label>
-          <input type="text" id="adblock-modal-input" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #4ade80; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none;" value="" />
-        </div>
-        <div style="margin-bottom: 10px; width: 100%; max-width: 100%; box-sizing: border-box; overflow: hidden;">
-          <label style="display: block; color: #a1a1aa; font-size: 11px; margin-bottom: 4px; font-weight: 500;">추천 선택자 목록 (선택 시 자동 적용):</label>
-          <select id="adblock-modal-candidate-select" style="width: 100%; max-width: 100%; box-sizing: border-box; height: 38px; padding: 6px 30px 6px 10px; background-color: #09090b; color: #4ade80; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none; cursor: pointer; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; display: block;">
-          </select>
-        </div>
-        ${isCoverType ? `
-        <div style="margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between;">
-          <label style="color: #a1a1aa; font-size: 12px; font-weight: 500;">덮을 배경 색상:</label>
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <input type="color" id="adblock-modal-cover-color" value="#ffffff" style="width: 38px; height: 30px; padding: 1px 2px; background: #09090b; border: 1px solid #3f3f46; border-radius: 6px; cursor: pointer; vertical-align: middle;" title="색상 선택 (클릭 시 팔레트 표시)" />
-            <button type="button" id="adblock-modal-eyedropper-btn" style="padding: 5px 10px; background: #27272a; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 4px; font-weight: 500;" title="화면에서 마우스로 색상 추출">
-              💧 스포이드
-            </button>
-          </div>
-        </div>
-        ` : ''}
-        ${isShortcutType ? `
-        <div style="margin-bottom: 14px;">
-          <label style="display: block; color: #a1a1aa; font-size: 12px; margin-bottom: 4px; font-weight: 500;">할당할 단축키 (Key):</label>
-          <input type="text" id="adblock-modal-shortcut-key-input" placeholder="예: a 또는 d 또는 ArrowLeft" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #cba6f7; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; font-weight: bold; outline: none;" value="" />
-        </div>
-        <div id="adblock-modal-code-wrapper" style="margin-bottom: 14px;">
-          <label style="display: block; color: #cba6f7; font-size: 12px; margin-bottom: 4px; font-weight: 500;">실행할 JS/JSX 코드 (Function):</label>
-          <textarea id="adblock-modal-code-input" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #cba6f7; border: 1px solid #cba6f7; border-radius: 6px; font-family: monospace; font-size: 11px; outline: none; height: 75px; resize: vertical;">${defaultFuncCode}</textarea>
-        </div>
-        ` : ''}
-        ${isStyleType ? `
-        <div style="margin-bottom: 14px;">
-          <label style="display: block; color: #a1a1aa; font-size: 12px; margin-bottom: 4px; font-weight: 500;">주입할 CSS 스타일 (Style):</label>
-          <textarea id="adblock-modal-style-input" placeholder="예: background: red !important; opacity: 0.5;" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #ffab40; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none; height: 55px; resize: vertical;"></textarea>
-        </div>
-        ` : ''}
-        <div style="margin-top: 10px; margin-bottom: 14px;">
-          <label style="display: flex; align-items: center; gap: 8px; color: #a1a1aa; font-size: 12px; cursor: pointer; user-select: none; line-height: 1.3;" title="도메인의 숫자 부분을 * 와일드카드로 저장하여 넘버링 도메인에 동시 적용">
-            <input type="checkbox" id="adblock-modal-domain-wildcard" style="width: 16px; height: 16px; min-width: 16px; min-height: 16px; accent-color: #ff9800; cursor: pointer; flex-shrink: 0; margin: 0;" ${hasNumericDomain(window.location.host || window.location.hostname) ? 'checked' : ''} />
-            <span style="display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; line-height: 1.3;">와일드카드 도메인 적용 <span style="color: #ffab40; font-family: monospace; font-size: 11px;">(${getWildcardDomain(window.location.host || window.location.hostname)})</span></span>
-          </label>
-        </div>
-        <div style="display: flex; justify-content: flex-end; gap: 8px;">
-          <button id="adblock-modal-cancel" style="padding: 6px 14px; background: #27272a; color: #d4d4d8; border: 1px solid #3f3f46; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 500; white-space: nowrap;">취소</button>
-          <button id="adblock-modal-confirm" style="padding: 6px 16px; background: #ff9800; color: #09090b; font-weight: 600; border: none; border-radius: 6px; font-size: 12px; cursor: pointer; white-space: nowrap;">확인 및 적용</button>
-        </div>
-      </div>
-    `;
-
-    document.body.appendChild(modalContainer);
-
-    const parentBtn = modalContainer.querySelector("#adblock-modal-parent-btn");
-    const childBtn = modalContainer.querySelector("#adblock-modal-child-btn");
-    const prevBtn = modalContainer.querySelector("#adblock-modal-prev-btn");
-    const nextBtn = modalContainer.querySelector("#adblock-modal-next-btn");
-    const maxBtn = modalContainer.querySelector("#adblock-modal-maximize");
-    const togglePosBtn = modalContainer.querySelector("#adblock-modal-toggle-pos");
-    const resizerLeft = modalContainer.querySelector("#adblock-modal-resizer-left");
-    const inputEl = modalContainer.querySelector("#adblock-modal-input");
-    const infoEl = modalContainer.querySelector("#adblock-modal-info");
-    const confirmBtn = modalContainer.querySelector("#adblock-modal-confirm");
-    const cancelBtn = modalContainer.querySelector("#adblock-modal-cancel");
-    const closeBtn = modalContainer.querySelector("#adblock-modal-close");
-
-    let isTopPos = false;
-    togglePosBtn.onclick = () => {
-      isTopPos = !isTopPos;
-      if (isTopPos) {
-        modalContainer.style.bottom = "auto";
-        modalContainer.style.top = "30px";
-        togglePosBtn.innerText = "⬇️";
-      } else {
-        modalContainer.style.top = "auto";
-        modalContainer.style.bottom = "24px";
-        togglePosBtn.innerText = "⬆️";
-      }
-    };
-    const styleInput = isStyleType ? modalContainer.querySelector("#adblock-modal-style-input") : null;
-    const colorInput = isCoverType ? modalContainer.querySelector("#adblock-modal-cover-color") : null;
-    const eyedropperBtn = isCoverType ? modalContainer.querySelector("#adblock-modal-eyedropper-btn") : null;
-
-    if (eyedropperBtn && colorInput) {
-      eyedropperBtn.onclick = async () => {
-        if (!window.EyeDropper) {
-          if (typeof Toast !== "undefined" && Toast.show) {
-            Toast.show("⚠️ 현재 브라우저는 스포이드(EyeDropper) API를 지원하지 않습니다.");
-          } else {
-            alert("현재 브라우저는 스포이드(EyeDropper) API를 지원하지 않습니다.");
-          }
-          return;
-        }
-        try {
-          const eyeDropper = new EyeDropper();
-          const result = await eyeDropper.open();
-          if (result && result.sRGBHex) {
-            colorInput.value = result.sRGBHex;
-            updateLiveStylePreview();
-          }
-        } catch (e) {
-          // ESC 등으로 취소 시 무시
-        }
-      };
-
-      colorInput.oninput = () => {
-        updateLiveStylePreview();
-      };
-    }
-
-    if (inputEl) {
-      inputEl.oninput = () => {
-        const curVal = inputEl.value.trim();
-        if (isShortcutType && codeInput) {
-          const currentCode = codeInput.value.trim();
-          if (!currentCode || currentCode.includes('document.querySelector(')) {
-            codeInput.value = `document.querySelector("${curVal}").click();`;
-          }
-        }
-        const curEl = elementStack[currentIndex];
-        updateMultiOverlay(curVal, curEl);
-        updateLiveStylePreview();
-      };
-    }
-
-    function updateLiveStylePreview() {
-      const selVal = normalizeWildcardSelector(inputEl.value.trim());
-      if (!selVal || isExtendedSelector(selVal)) {
-        livePreviewStyle.textContent = '';
-        return;
-      }
-      if (isStyleType && styleInput) {
-        const cssText = styleInput.value.trim();
-        livePreviewStyle.textContent = cssText ? `${selVal} { ${cssText} }` : '';
-      } else if (isCoverType && colorInput) {
-        const coverColor = colorInput.value || '#ffffff';
-        livePreviewStyle.textContent = `${selVal} { position: relative !important; overflow: hidden !important; }\n${selVal}::after { content: '' !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; background-color: ${coverColor} !important; z-index: 99999 !important; pointer-events: auto !important; }`;
-      } else {
-        livePreviewStyle.textContent = '';
-      }
-    }
-
-    inputEl.value = initialSelector || '';
-
-    function createTreeItem(el, indentLevel, isCurrent, type) {
-      const row = document.createElement('div');
-      row.className = isCurrent ? 'adblock-tree-item adblock-tree-active' : 'adblock-tree-item';
-      
-      const tag = el.tagName ? el.tagName.toLowerCase() : '';
-      const idStr = el.id ? `#${el.id}` : '';
-      const classStr = el.className && typeof el.className === 'string' ? `.${el.className.trim().split(/\s+/).join('.')}` : '';
-      
-      row.style.cssText = `
-        padding: 3px 6px;
-        padding-left: ${indentLevel * 12 + 6}px;
-        cursor: pointer;
-        border-radius: 4px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        transition: background 0.1s;
-        margin-bottom: 2px;
-        user-select: none;
-        ${isCurrent ? (isShortcutType ? 'background: rgba(203, 166, 247, 0.25); color: #cba6f7; font-weight: bold; border-left: 3px solid #cba6f7;' : 'background: rgba(255, 152, 0, 0.25); color: #ffab40; font-weight: bold; border-left: 3px solid #ff9800;') : (type === 'anc' ? 'color: #89b4fa;' : 'color: #cdd6f4;')}
-      `;
-
-      row.onmouseenter = () => {
-        if (!isCurrent) row.style.background = 'rgba(255, 255, 255, 0.08)';
-      };
-      row.onmouseleave = () => {
-        if (!isCurrent) row.style.background = 'transparent';
-      };
-
-      const icon = isCurrent ? '▶ ' : (type === 'anc' ? '▲ ' : (type === 'child' ? '└ ' : '• '));
-      row.textContent = `${icon}<${tag}${idStr}${classStr}>`;
-      return row;
-    }
-
-    function renderTree(curEl) {
-      infoEl.innerHTML = '';
-      if (!curEl) {
-        infoEl.innerHTML = '<div style="color: #666; padding: 4px;">선택된 요소 없음 (수동 입력 중)</div>';
-        return;
-      }
-
-      const ancestors = [];
-      let parent = curEl.parentElement;
-      while (parent && parent !== document.documentElement && parent !== document.body.parentNode && ancestors.length < 3) {
-        ancestors.unshift(parent);
-        parent = parent.parentElement;
-      }
-
-      let indent = 0;
-      const frag = document.createDocumentFragment();
-
-      ancestors.forEach((ancEl) => {
-        const item = createTreeItem(ancEl, indent, false, 'anc');
-        item.onclick = () => {
-          let foundIdx = elementStack.indexOf(ancEl);
-          if (foundIdx !== -1) {
-            currentIndex = foundIdx;
-          } else {
-            elementStack.push(ancEl);
-            currentIndex = elementStack.length - 1;
-          }
-          refreshUI();
-        };
-        frag.appendChild(item);
-        indent++;
-      });
-
-      const parentEl = curEl.parentElement;
-      const siblings = parentEl ? Array.from(parentEl.children) : [curEl];
-
-      siblings.forEach((sibEl) => {
-        const isCurrent = (sibEl === curEl);
-        const item = createTreeItem(sibEl, indent, isCurrent, isCurrent ? 'cur' : 'sib');
-        item.onclick = () => {
-          if (!isCurrent) {
-            elementStack[currentIndex] = sibEl;
-            refreshUI();
-          }
-        };
-        frag.appendChild(item);
-
-        if (isCurrent && curEl.children && curEl.children.length > 0) {
-          const children = Array.from(curEl.children).slice(0, 5);
-          children.forEach((childEl) => {
-            const childItem = createTreeItem(childEl, indent + 1, false, 'child');
-            childItem.onclick = () => {
-              if (currentIndex < elementStack.length - 1) {
-                elementStack.splice(currentIndex + 1);
-              }
-              elementStack.push(childEl);
-              currentIndex++;
-              refreshUI();
-            };
-            frag.appendChild(childItem);
-          });
-          if (curEl.children.length > 5) {
-            const moreEl = document.createElement('div');
-            moreEl.style.paddingLeft = `${(indent + 1) * 12 + 6}px`;
-            moreEl.style.color = '#666';
-            moreEl.style.fontSize = '10px';
-            moreEl.style.paddingTop = '2px';
-            moreEl.textContent = `... 외 ${curEl.children.length - 5}개 자식`;
-            frag.appendChild(moreEl);
-          }
-        }
-      });
-
-      infoEl.appendChild(frag);
-
-      const activeItem = infoEl.querySelector('.adblock-tree-active');
-      if (activeItem) {
-        activeItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-      }
-    }
-
-    const codeInput = isShortcutType ? modalContainer.querySelector("#adblock-modal-code-input") : null;
-    if (isShortcutType && codeInput) {
-      const defaultSel = initialSelector || (initialElement ? (generateCandidateSelectors(initialElement)[0] || getUniqueSelector(initialElement)) : '');
-      codeInput.value = `() => {\n  document.querySelector("${defaultSel}").click();\n}`;
-    }
-
-    function renderCandidateSelect(targetElement) {
-      const selectEl = modalContainer.querySelector("#adblock-modal-candidate-select");
-      if (!selectEl) return;
-      selectEl.innerHTML = "";
-
-      if (!targetElement) {
-        const opt = document.createElement("option");
-        opt.textContent = "선택된 요소 없음";
-        opt.disabled = true;
-        selectEl.appendChild(opt);
-        return;
-      }
-
-      const candidateList = generateCandidateSelectors(targetElement);
-      if (candidateList.length === 0) {
-        const opt = document.createElement("option");
-        opt.textContent = "추천 선택자 없음";
-        opt.disabled = true;
-        selectEl.appendChild(opt);
-        return;
-      }
-
-      const curInputValue = inputEl ? inputEl.value.trim() : '';
-
-      candidateList.forEach(sel => {
-        const opt = document.createElement("option");
-        opt.value = sel;
-        opt.textContent = sel.length > 70 ? sel.substring(0, 67) + "..." : sel;
-        opt.style.cssText = "background-color: #09090b; color: #4ade80;";
-        if (sel === curInputValue) {
-          opt.selected = true;
-        }
-        selectEl.appendChild(opt);
-      });
-
-      selectEl.onchange = () => {
-        const chosenVal = selectEl.value;
-        if (chosenVal && inputEl) {
-          inputEl.value = chosenVal;
-          if (isShortcutType && codeInput) {
-            codeInput.value = `document.querySelector("${chosenVal}").click();`;
-          }
-          const curEl = elementStack[currentIndex];
-          updateMultiOverlay(chosenVal, curEl);
-          updateLiveStylePreview();
-          Toast.show(`선택자 적용: ${chosenVal}`);
-        }
-      };
-    }
-
-    function refreshUI() {
-      const curEl = elementStack[currentIndex];
-      if (curEl) {
-        const candidateList = generateCandidateSelectors(curEl);
-        const bestSel = candidateList.length > 0 ? candidateList[0] : getUniqueSelector(curEl);
-        if (inputEl) inputEl.value = bestSel;
-
-        if (isShortcutType && codeInput) {
-          const currentCode = codeInput.value.trim();
-          if (!currentCode || currentCode.includes('document.querySelector(')) {
-            codeInput.value = `document.querySelector("${bestSel}").click();`;
-          }
-        }
-
-        renderTree(curEl);
-        renderCandidateSelect(curEl);
-        updateMultiOverlay(bestSel, curEl);
-
-        const canGoParent = curEl.parentElement && curEl.parentElement !== document.documentElement && curEl.parentElement !== document.body.parentNode;
-        parentBtn.disabled = !canGoParent;
-        parentBtn.style.opacity = canGoParent ? '1' : '0.4';
-        parentBtn.style.cursor = canGoParent ? 'pointer' : 'not-allowed';
-
-        const canGoPrev = !!curEl.previousElementSibling;
-        prevBtn.disabled = !canGoPrev;
-        prevBtn.style.opacity = canGoPrev ? '1' : '0.4';
-        prevBtn.style.cursor = canGoPrev ? 'pointer' : 'not-allowed';
-
-        const canGoNext = !!curEl.nextElementSibling;
-        nextBtn.disabled = !canGoNext;
-        nextBtn.style.opacity = canGoNext ? '1' : '0.4';
-        nextBtn.style.cursor = canGoNext ? 'pointer' : 'not-allowed';
-      } else {
-        renderTree(null);
-        parentBtn.disabled = true;
-        parentBtn.style.opacity = '0.4';
-        parentBtn.style.cursor = 'not-allowed';
-
-        prevBtn.disabled = true;
-        prevBtn.style.opacity = '0.4';
-        prevBtn.style.cursor = 'not-allowed';
-
-        nextBtn.disabled = true;
-        nextBtn.style.opacity = '0.4';
-        nextBtn.style.cursor = 'not-allowed';
-      }
-
-      const canGoChild = currentIndex > 0;
-      childBtn.disabled = !canGoChild;
-      childBtn.style.opacity = canGoChild ? '1' : '0.4';
-      childBtn.style.cursor = canGoChild ? 'pointer' : 'not-allowed';
-    }
-
-    refreshUI();
-
-    parentBtn.onclick = () => {
-      const curEl = elementStack[currentIndex];
-      if (!curEl) return;
-
-      if (currentIndex === elementStack.length - 1) {
-        const parent = curEl.parentElement;
-        if (parent && parent !== document.documentElement && parent !== document.body.parentNode) {
-          elementStack.push(parent);
-          currentIndex++;
-        }
-      } else {
-        currentIndex++;
-      }
-      refreshUI();
-    };
-
-    childBtn.onclick = () => {
-      if (currentIndex > 0) {
-        currentIndex--;
-        refreshUI();
-      }
-    };
-
-    prevBtn.onclick = () => {
-      const curEl = elementStack[currentIndex];
-      if (curEl && curEl.previousElementSibling) {
-        elementStack[currentIndex] = curEl.previousElementSibling;
-        refreshUI();
-      }
-    };
-
-    nextBtn.onclick = () => {
-      const curEl = elementStack[currentIndex];
-      if (curEl && curEl.nextElementSibling) {
-        elementStack[currentIndex] = curEl.nextElementSibling;
-        refreshUI();
-      }
-    };
-
-    let isMaximized = false;
-    maxBtn.onclick = () => {
-      isMaximized = !isMaximized;
-      if (isMaximized) {
-        maxBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="9" width="12" height="12" rx="1.5"/><path d="M9 9V4.5A1.5 1.5 0 0 1 10.5 3H19.5A1.5 1.5 0 0 1 21 4.5V13.5A1.5 1.5 0 0 1 19.5 15H15"/></svg>';
-        modalContainer.style.top = '24px';
-        modalContainer.style.bottom = '24px';
-        modalContainer.style.height = 'calc(100vh - 48px)';
-        modalContainer.style.display = 'flex';
-        modalContainer.style.flexDirection = 'column';
-
-        infoEl.style.height = 'auto';
-        infoEl.style.maxHeight = 'none';
-        infoEl.style.flex = '1';
-      } else {
-        maxBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>';
-        modalContainer.style.top = 'auto';
-        modalContainer.style.bottom = '24px';
-        modalContainer.style.height = 'auto';
-
-        infoEl.style.height = '100px';
-        infoEl.style.maxHeight = '100px';
-        infoEl.style.flex = 'none';
-      }
-    };
-
-    let isResizing = false;
-    let startX = 0;
-    let startWidth = 0;
-
-    resizerLeft.onmousedown = (e) => {
-      e.preventDefault();
-      isResizing = true;
-      startX = e.clientX;
-      startWidth = modalContainer.offsetWidth;
-
-      document.addEventListener("mousemove", onMouseMoveResizer);
-      document.addEventListener("mouseup", onMouseUpResizer);
-    };
-
-    function onMouseMoveResizer(e) {
-      if (!isResizing) return;
-      const dx = startX - e.clientX;
-      const newWidth = Math.max(320, Math.min(window.innerWidth - 32, startWidth + dx));
-      modalContainer.style.width = newWidth + "px";
-    }
-
-    function onMouseUpResizer() {
-      isResizing = false;
-      document.removeEventListener("mousemove", onMouseMoveResizer);
-      document.removeEventListener("mouseup", onMouseUpResizer);
-    }
-
-    inputEl.oninput = () => {
-      const curEl = elementStack[currentIndex];
-      updateMultiOverlay(inputEl.value, curEl);
-      updateLiveStylePreview();
-    };
-
-    if (styleInput) {
-      styleInput.oninput = () => {
-        updateLiveStylePreview();
-      };
-    }
-
-    const closeModal = () => {
-      onMouseUpResizer();
-      modalContainer.remove();
-      if (highlightContainer) {
-        highlightContainer.remove();
-      }
-      if (livePreviewStyle) {
-        livePreviewStyle.remove();
-      }
-      document.removeEventListener("keydown", onModalKeyDown);
-    };
-
-    const onModalKeyDown = (e) => {
-      if (e.key === "Escape") {
-        closeModal();
-      }
-    };
-    document.addEventListener("keydown", onModalKeyDown);
-
-    confirmBtn.onclick = () => {
-      const val = inputEl ? normalizeWildcardSelector(inputEl.value.trim()) : '';
-      const styleVal = isStyleType && styleInput ? styleInput.value.trim() : '';
-      const shortcutKeyInput = isShortcutType ? modalContainer.querySelector("#adblock-modal-shortcut-key-input") : null;
-      const shortcutKeyVal = shortcutKeyInput ? shortcutKeyInput.value.trim() : '';
-      const codeInput = isShortcutType ? modalContainer.querySelector("#adblock-modal-code-input") : null;
-      const codeVal = isShortcutType && codeInput ? codeInput.value.trim() : '';
-      const wildcardCheckbox = modalContainer.querySelector("#adblock-modal-domain-wildcard");
-      const useWildcard = wildcardCheckbox ? wildcardCheckbox.checked : false;
-
-      if (isShortcutType) {
-        if (!shortcutKeyVal || !codeVal) {
-          alert("할당할 단축키 키와 실행할 JS/JSX 코드는 필수 입력 항목입니다.");
-          return;
-        }
-      }
-
-      closeModal();
-      if ((val || (isShortcutType && codeVal)) && onConfirm) {
-        if (isStyleType) {
-          onConfirm({ selector: val, style: styleVal, useWildcardDomain: useWildcard });
-        } else if (isShortcutType) {
-          const matchSel = codeVal.match(/document\.querySelector\((['"])(.*?)\1\)/);
-          const extractedSel = matchSel ? matchSel[2] : val;
-          onConfirm({ selector: extractedSel, key: shortcutKeyVal, isFunc: true, code: codeVal, useWildcardDomain: useWildcard });
-        } else if (isCoverType) {
-          const coverColor = colorInput ? colorInput.value : '#ffffff';
-          onConfirm({ selector: val, color: coverColor, useWildcardDomain: useWildcard });
-        } else {
-          onConfirm({ selector: val, useWildcardDomain: useWildcard });
-        }
-      }
-    };
-
-    cancelBtn.onclick = () => closeModal();
-    closeBtn.onclick = () => closeModal();
-  }
 
   function handleSelectorAdd(finalSelector, type = 'cover', targetElement = null) {
     showSelectorModal({
