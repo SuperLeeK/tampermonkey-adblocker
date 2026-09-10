@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202609040940
+// @version      202609101555
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -624,7 +624,8 @@ function getGistConfig() {
     token: "",
     fileName: "ad_selector_list.json",
     blackListFileName: "ad_selector_blacklist.json",
-    authFileName: "ad_selector_auth.json"
+    authFileName: "ad_selector_auth.json",
+    bookmarkFileName: "ad_selector_bookmarks.json"
   };
 
   const saved = GM_getValue("gist_config", null);
@@ -1224,6 +1225,802 @@ if (typeof document !== "undefined") {
   }
 }
 
+/* ==========================================================================
+   🔖 플로팅 버튼 드래그 헬퍼 & 넘버링 도메인 대응 Gist 북마크 모듈
+   ========================================================================== */
+
+/**
+ * 플로팅 버튼을 세로(위/아래)로만 드래그하여 이동할 수 있게 하고,
+ * 가로는 지정한 쪽(left 또는 right) 10px에 완전 고정하며, 창 크기 축소 시 창 하단 + 10px 위치로 자동 보정합니다.
+ */
+function makeElementDraggable(element, handle, storageKey, options = {}) {
+  if (!element || !handle) return;
+
+  const side = options.side || 'left'; // 'left' 또는 'right'
+  const margin = typeof options.margin === 'number' ? options.margin : 10;
+  const defaultBottom = typeof options.defaultBottom === 'number' ? options.defaultBottom : 20;
+
+  const savedPos = GM_getValue(storageKey, null);
+
+  const applyHorizontal = () => {
+    if (side === 'left') {
+      element.style.setProperty("left", `${margin}px`, "important");
+      element.style.setProperty("right", "auto", "important");
+    } else {
+      element.style.setProperty("right", `${margin}px`, "important");
+      element.style.setProperty("left", "auto", "important");
+    }
+  };
+
+  const applyPosition = (pos) => {
+    applyHorizontal();
+    if (!pos) return;
+    if (typeof pos.top === "number") {
+      element.style.setProperty("top", `${pos.top}px`, "important");
+      element.style.setProperty("bottom", "auto", "important");
+    } else if (typeof pos.bottom === "number") {
+      element.style.setProperty("bottom", `${pos.bottom}px`, "important");
+      element.style.setProperty("top", "auto", "important");
+    }
+  };
+
+  const clampPosition = () => {
+    applyHorizontal();
+    const rect = element.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+
+    const winH = window.innerHeight;
+    let newTop = rect.top;
+    let changed = false;
+
+    // 창의 높이가 줄어들어서 위치에 있지 못하게 되면 창의 하단 + 10px 의 위치에 유지
+    if (rect.bottom > winH - 10) {
+      newTop = Math.max(10, winH - rect.height - 10);
+      changed = true;
+    }
+    if (newTop < 10) {
+      newTop = 10;
+      changed = true;
+    }
+
+    if (changed || !savedPos) {
+      element.style.setProperty("top", `${newTop}px`, "important");
+      element.style.setProperty("bottom", "auto", "important");
+      GM_setValue(storageKey, { top: newTop });
+    }
+  };
+
+  if (savedPos && typeof savedPos.top === "number") {
+    applyPosition(savedPos);
+    requestAnimationFrame(() => clampPosition());
+  } else {
+    applyPosition({ bottom: defaultBottom });
+    requestAnimationFrame(() => clampPosition());
+  }
+
+  window.addEventListener("resize", () => {
+    clampPosition();
+  });
+
+  handle.style.cursor = "ns-resize";
+
+  let isDragging = false;
+  let hasMoved = false;
+  let startY = 0;
+  let initialTop = 0;
+
+  handle.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    const rect = element.getBoundingClientRect();
+    startY = e.clientY;
+    initialTop = rect.top;
+    isDragging = true;
+    hasMoved = false;
+
+    const onMouseMove = (moveEvent) => {
+      if (!isDragging) return;
+      const dy = moveEvent.clientY - startY;
+
+      if (!hasMoved && Math.abs(dy) > 4) {
+        hasMoved = true;
+      }
+
+      if (hasMoved) {
+        let curTop = initialTop + dy;
+        const winH = window.innerHeight;
+        const elH = rect.height;
+
+        // 세로 위치만 10px 마진 클램핑
+        curTop = Math.max(10, Math.min(winH - elH - 10, curTop));
+
+        element.style.setProperty("top", `${curTop}px`, "important");
+        element.style.setProperty("bottom", "auto", "important");
+        applyHorizontal();
+      }
+    };
+
+    const onMouseUp = () => {
+      if (!isDragging) return;
+      isDragging = false;
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+
+      if (hasMoved) {
+        const curRect = element.getBoundingClientRect();
+        GM_setValue(storageKey, { top: curRect.top });
+
+        // 클릭 이벤트 오발동 방지
+        const captureClick = (clickEvent) => {
+          clickEvent.stopPropagation();
+          clickEvent.preventDefault();
+          window.removeEventListener("click", captureClick, true);
+        };
+        window.addEventListener("click", captureClick, true);
+      }
+    };
+
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  });
+}
+
+function getBookmarkConfigs() {
+  try {
+    const data = GM_getValue("adblocker_bookmarks", null);
+    if (data && typeof data === "object") return data;
+  } catch (e) {}
+  return { bookmarks: {} };
+}
+
+function setBookmarkConfigsLocal(data) {
+  try {
+    GM_setValue("adblocker_bookmarks", data);
+  } catch (e) {}
+}
+
+async function syncBookmarksToGist(data) {
+  const gistConfig = getGistConfig();
+  if (!gistConfig || !gistConfig.gistId || !gistConfig.token || typeof useGist !== "function") {
+    return false;
+  }
+  try {
+    const { set } = useGist(
+      gistConfig.gistId,
+      gistConfig.token,
+      gistConfig.bookmarkFileName || "ad_selector_bookmarks.json"
+    );
+    await set(data);
+    return true;
+  } catch (err) {
+    console.error("[Bookmark] Gist 동기화 실패:", err);
+    return false;
+  }
+}
+
+async function fetchBookmarksFromGist() {
+  const gistConfig = getGistConfig();
+  if (!gistConfig || !gistConfig.gistId || !gistConfig.token || typeof useGist !== "function") {
+    return getBookmarkConfigs();
+  }
+  try {
+    const { get } = useGist(
+      gistConfig.gistId,
+      gistConfig.token,
+      gistConfig.bookmarkFileName || "ad_selector_bookmarks.json"
+    );
+    const data = await get();
+    if (data && typeof data === "object" && data.bookmarks) {
+      setBookmarkConfigsLocal(data);
+      return data;
+    }
+  } catch (err) {
+    console.warn("[Bookmark] Gist 데이터 가져오기 실패, 로컬 캐시 사용:", err);
+  }
+  return getBookmarkConfigs();
+}
+
+function getBookmarkDomainKey(hostname = window.location.hostname) {
+  const clean = hostname.replace(/^www\./, "").toLowerCase();
+  if (hasNumericDomain(clean)) {
+    return getWildcardDomain(clean);
+  }
+  return clean;
+}
+
+function getBookmarksForCurrentSite(data) {
+  const curHost = window.location.hostname.replace(/^www\./, "").toLowerCase();
+  const all = (data && data.bookmarks) ? data.bookmarks : {};
+  const results = [];
+
+  for (const [key, list] of Object.entries(all)) {
+    if (!Array.isArray(list)) continue;
+    if (key === curHost || (key.includes("*") && isMatch(key, curHost))) {
+      for (const item of list) {
+        results.push({ ...item, domainKey: key });
+      }
+    }
+  }
+  return results.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+async function addBookmark(title, memo = "") {
+  const data = getBookmarkConfigs();
+  if (!data.bookmarks) data.bookmarks = {};
+
+  const domainKey = getBookmarkDomainKey();
+  if (!Array.isArray(data.bookmarks[domainKey])) {
+    data.bookmarks[domainKey] = [];
+  }
+
+  const currentPath = window.location.pathname + window.location.search + window.location.hash;
+  const newBm = {
+    id: "bm_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+    title: (title || document.title || "새 북마크").trim(),
+    memo: (memo || "").trim(),
+    path: currentPath,
+    createdAt: Date.now()
+  };
+
+  data.bookmarks[domainKey].unshift(newBm);
+  setBookmarkConfigsLocal(data);
+
+  syncBookmarksToGist(data).then(ok => {
+    if (ok && typeof Toast !== "undefined" && Toast.show) {
+      Toast.show("🔖 북마크가 Gist에 동기화되었습니다.");
+    }
+  });
+
+  return newBm;
+}
+
+async function updateBookmark(id, newTitle, newMemo = "") {
+  const data = getBookmarkConfigs();
+  if (!data.bookmarks) return;
+
+  let found = false;
+  for (const list of Object.values(data.bookmarks)) {
+    if (!Array.isArray(list)) continue;
+    const target = list.find(item => item.id === id);
+    if (target) {
+      target.title = (newTitle || "").trim();
+      target.memo = (newMemo || "").trim();
+      target.updatedAt = Date.now();
+      found = true;
+      break;
+    }
+  }
+
+  if (found) {
+    setBookmarkConfigsLocal(data);
+    syncBookmarksToGist(data).then(ok => {
+      if (ok && typeof Toast !== "undefined" && Toast.show) {
+        Toast.show("✏️ 북마크가 수정되었습니다.");
+      }
+    });
+  }
+}
+
+async function deleteBookmark(id) {
+  const data = getBookmarkConfigs();
+  if (!data.bookmarks) return;
+
+  let found = false;
+  for (const [key, list] of Object.entries(data.bookmarks)) {
+    if (!Array.isArray(list)) continue;
+    const initialLen = list.length;
+    data.bookmarks[key] = list.filter(item => item.id !== id);
+    if (data.bookmarks[key].length !== initialLen) {
+      found = true;
+      if (data.bookmarks[key].length === 0) {
+        delete data.bookmarks[key];
+      }
+      break;
+    }
+  }
+
+  if (found) {
+    setBookmarkConfigsLocal(data);
+    syncBookmarksToGist(data).then(ok => {
+      if (ok && typeof Toast !== "undefined" && Toast.show) {
+        Toast.show("🗑️ 북마크가 삭제되었습니다.");
+      }
+    });
+  }
+}
+
+function initBookmarkWidget() {
+  if (window.top !== window.self) return;
+  if (document.getElementById("adblock-bookmark-ui-group")) return;
+
+  if (!document.getElementById("adblock-bookmark-styles")) {
+    const styleEl = document.createElement("style");
+    styleEl.id = "adblock-bookmark-styles";
+    styleEl.textContent = `
+      #adblock-bookmark-ui-group {
+        position: fixed !important;
+        z-index: 2147483646 !important;
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: flex-end !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        box-sizing: border-box !important;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+        user-select: none !important;
+      }
+      #adblock-bookmark-ui-group * {
+        box-sizing: border-box !important;
+      }
+      .adblock-bookmark-fab {
+        width: 42px !important;
+        height: 42px !important;
+        border-radius: 50% !important;
+        background: linear-gradient(135deg, #6366f1 0%, #4338ca 100%) !important;
+        color: #ffffff !important;
+        border: 1px solid rgba(255, 255, 255, 0.25) !important;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35) !important;
+        cursor: grab !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        font-size: 19px !important;
+        transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease !important;
+        outline: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        line-height: 1 !important;
+      }
+      .adblock-bookmark-fab:hover {
+        transform: scale(1.1) !important;
+        box-shadow: 0 6px 18px rgba(99, 102, 241, 0.5) !important;
+      }
+      .adblock-bookmark-fab:active {
+        cursor: grabbing !important;
+        transform: scale(0.95) !important;
+      }
+      .adblock-bookmark-card {
+        position: absolute !important;
+        width: 320px !important;
+        max-width: calc(100vw - 32px) !important;
+        background: #18181b !important;
+        color: #f4f4f5 !important;
+        border: 1px solid rgba(255, 255, 255, 0.15) !important;
+        border-radius: 12px !important;
+        box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6) !important;
+        display: none;
+        flex-direction: column !important;
+        overflow: hidden !important;
+        animation: adblockBookmarkFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+      }
+      @keyframes adblockBookmarkFadeIn {
+        from { opacity: 0; transform: scale(0.94); }
+        to { opacity: 1; transform: scale(1); }
+      }
+      .adblock-bookmark-header {
+        padding: 10px 14px !important;
+        background: rgba(255, 255, 255, 0.05) !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+        display: flex !important;
+        justify-content: space-between !important;
+        align-items: center !important;
+      }
+      .adblock-bookmark-header-title {
+        font-weight: 600 !important;
+        font-size: 13px !important;
+        color: #a5b4fc !important;
+        display: flex !important;
+        align-items: center !important;
+        gap: 6px !important;
+      }
+      .adblock-bookmark-header-badge {
+        font-size: 11px !important;
+        color: #71717a !important;
+        font-family: monospace !important;
+        max-width: 140px !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+      }
+      .adblock-bookmark-close-btn {
+        background: none !important;
+        border: none !important;
+        color: #a1a1aa !important;
+        font-size: 16px !important;
+        cursor: pointer !important;
+        padding: 2px 6px !important;
+        border-radius: 4px !important;
+        line-height: 1 !important;
+      }
+      .adblock-bookmark-close-btn:hover {
+        background: rgba(255, 255, 255, 0.1) !important;
+        color: #ffffff !important;
+      }
+      .adblock-bookmark-add-area {
+        padding: 10px 12px !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+        background: rgba(99, 102, 241, 0.06) !important;
+      }
+      .adblock-bookmark-add-toggle-btn {
+        width: 100% !important;
+        padding: 7px 10px !important;
+        background: #4f46e5 !important;
+        color: #ffffff !important;
+        border: 1px solid #6366f1 !important;
+        border-radius: 6px !important;
+        font-size: 12px !important;
+        font-weight: 600 !important;
+        cursor: pointer !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: 6px !important;
+        transition: background 0.15s ease !important;
+      }
+      .adblock-bookmark-add-toggle-btn:hover {
+        background: #4338ca !important;
+      }
+      .adblock-bookmark-add-form {
+        display: flex !important;
+        flex-direction: column !important;
+        gap: 8px !important;
+        margin-top: 8px !important;
+      }
+      .adblock-bookmark-input {
+        width: 100% !important;
+        padding: 7px 10px !important;
+        background: #09090b !important;
+        border: 1px solid #3f3f46 !important;
+        border-radius: 6px !important;
+        color: #f4f4f5 !important;
+        font-size: 12px !important;
+        outline: none !important;
+      }
+      .adblock-bookmark-input:focus {
+        border-color: #6366f1 !important;
+        box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25) !important;
+      }
+      .adblock-bookmark-form-actions {
+        display: flex !important;
+        justify-content: flex-end !important;
+        gap: 6px !important;
+      }
+      .adblock-bookmark-btn-sm {
+        padding: 5px 10px !important;
+        font-size: 11px !important;
+        border-radius: 4px !important;
+        cursor: pointer !important;
+        font-weight: 500 !important;
+        border: none !important;
+      }
+      .adblock-bookmark-save-btn {
+        background: #22c55e !important;
+        color: #052e16 !important;
+        font-weight: 600 !important;
+      }
+      .adblock-bookmark-cancel-btn {
+        background: #27272a !important;
+        color: #a1a1aa !important;
+      }
+      .adblock-bookmark-list {
+        max-height: 280px !important;
+        overflow-y: auto !important;
+        padding: 6px 0 !important;
+        margin: 0 !important;
+        list-style: none !important;
+      }
+      .adblock-bookmark-list::-webkit-scrollbar {
+        width: 5px !important;
+      }
+      .adblock-bookmark-list::-webkit-scrollbar-thumb {
+        background: #3f3f46 !important;
+        border-radius: 3px !important;
+      }
+      .adblock-bookmark-item {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: space-between !important;
+        padding: 8px 12px !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.04) !important;
+        transition: background 0.15s ease !important;
+        gap: 8px !important;
+      }
+      .adblock-bookmark-item:hover {
+        background: rgba(255, 255, 255, 0.05) !important;
+      }
+      .adblock-bookmark-title-link {
+        flex: 1 !important;
+        color: #e4e4e7 !important;
+        font-size: 12px !important;
+        font-weight: 500 !important;
+        text-decoration: none !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+        cursor: pointer !important;
+      }
+      .adblock-bookmark-title-link:hover {
+        color: #a5b4fc !important;
+        text-decoration: underline !important;
+      }
+      .adblock-bookmark-item-actions {
+        display: flex !important;
+        align-items: center !important;
+        gap: 4px !important;
+        flex-shrink: 0 !important;
+      }
+      .adblock-bookmark-action-btn {
+        background: transparent !important;
+        border: none !important;
+        color: #71717a !important;
+        cursor: pointer !important;
+        font-size: 13px !important;
+        padding: 2px 4px !important;
+        border-radius: 4px !important;
+        line-height: 1 !important;
+        transition: color 0.15s ease, background 0.15s ease !important;
+      }
+      .adblock-bookmark-action-btn:hover {
+        background: rgba(255, 255, 255, 0.1) !important;
+        color: #ffffff !important;
+      }
+      .adblock-bookmark-action-delete:hover {
+        color: #f87171 !important;
+      }
+      .adblock-bookmark-empty {
+        padding: 24px 16px !important;
+        text-align: center !important;
+        color: #71717a !important;
+        font-size: 12px !important;
+        line-height: 1.5 !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(styleEl);
+  }
+
+  const container = document.createElement("div");
+  container.id = "adblock-bookmark-ui-group";
+
+  const popupCard = document.createElement("div");
+  popupCard.className = "adblock-bookmark-card";
+
+  const fabBtn = document.createElement("button");
+  fabBtn.className = "adblock-bookmark-fab";
+  fabBtn.title = "🔖 북마크 (드래그하여 위치 이동)";
+  fabBtn.innerHTML = "🔖";
+
+  container.appendChild(popupCard);
+  container.appendChild(fabBtn);
+
+  const domainKey = getBookmarkDomainKey();
+
+  const renderBookmarks = () => {
+    const data = getBookmarkConfigs();
+    const siteBookmarks = getBookmarksForCurrentSite(data);
+
+    const currentPath = window.location.pathname + window.location.search + window.location.hash;
+    const existingBm = siteBookmarks.find(b => b.path === currentPath);
+    const isAlreadyBookmarked = !!existingBm;
+
+    const initialTitle = isAlreadyBookmarked ? existingBm.title : (document.title || '');
+    const initialMemo = isAlreadyBookmarked ? (existingBm.memo || '') : '';
+    const toggleBtnText = isAlreadyBookmarked ? '✏️ 현재 페이지 북마크 수정' : '➕ 현재 페이지 추가';
+    const actionBtnText = isAlreadyBookmarked ? '수정' : '저장';
+
+    popupCard.innerHTML = `
+      <div class="adblock-bookmark-header">
+        <div class="adblock-bookmark-header-title">
+          <span>🔖 북마크</span>
+          <span style="font-size: 11px; background: #312e81; color: #c7d2fe; padding: 1px 6px; border-radius: 10px; font-weight: 600;">${siteBookmarks.length}</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span class="adblock-bookmark-header-badge" title="매칭 도메인: ${domainKey}">${domainKey}</span>
+          <button class="adblock-bookmark-close-btn" title="닫기">&times;</button>
+        </div>
+      </div>
+      <div class="adblock-bookmark-add-area">
+        <button class="adblock-bookmark-add-toggle-btn">
+          <span>${toggleBtnText}</span>
+        </button>
+        <div class="adblock-bookmark-add-form" style="display: none;">
+          <input type="text" class="adblock-bookmark-input" id="adblock-bm-new-title" placeholder="북마크명 입력" value="${initialTitle.replace(/"/g, '&quot;')}" />
+          <input type="text" class="adblock-bookmark-input" id="adblock-bm-new-memo" placeholder="비고/설명 (선택사항)" value="${initialMemo.replace(/"/g, '&quot;')}" />
+          <div class="adblock-bookmark-form-actions">
+            <button class="adblock-bookmark-btn-sm adblock-bookmark-cancel-btn" id="adblock-bm-add-cancel">취소</button>
+            <button class="adblock-bookmark-btn-sm adblock-bookmark-save-btn" id="adblock-bm-add-save">${actionBtnText}</button>
+          </div>
+        </div>
+      </div>
+      <ul class="adblock-bookmark-list">
+        ${siteBookmarks.length === 0 ? `
+          <li class="adblock-bookmark-empty">
+            등록된 북마크가 없습니다.<br/>
+            상단의 <strong>+ 현재 페이지 추가</strong>를 눌러 등록해보세요!
+          </li>
+        ` : siteBookmarks.map(bm => `
+          <li class="adblock-bookmark-item" data-bm-id="${bm.id}">
+            <div class="adblock-bookmark-info-col" style="flex: 1; min-width: 0; cursor: pointer;">
+              <div class="adblock-bookmark-title-link" title="클릭 시 이동">${bm.title.replace(/</g, '&lt;')}</div>
+              ${bm.memo ? `<div class="adblock-bookmark-memo-text" style="font-size: 11px; color: #a1a1aa; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${bm.memo.replace(/"/g, '&quot;')}">${bm.memo.replace(/</g, '&lt;')}</div>` : ''}
+            </div>
+            <div class="adblock-bookmark-item-actions">
+              <button class="adblock-bookmark-action-btn adblock-bookmark-action-edit" title="북마크 수정">✏️</button>
+              <button class="adblock-bookmark-action-btn adblock-bookmark-action-delete" title="북마크 삭제">🗑️</button>
+            </div>
+          </li>
+        `).join('')}
+      </ul>
+    `;
+
+    popupCard.querySelector(".adblock-bookmark-close-btn").onclick = () => {
+      popupCard.style.display = "none";
+    };
+
+    const addToggleBtn = popupCard.querySelector(".adblock-bookmark-add-toggle-btn");
+    const addForm = popupCard.querySelector(".adblock-bookmark-add-form");
+    const newTitleInput = popupCard.querySelector("#adblock-bm-new-title");
+    const newMemoInput = popupCard.querySelector("#adblock-bm-new-memo");
+
+    addToggleBtn.onclick = () => {
+      const isShowing = addForm.style.display !== "none";
+      addForm.style.display = isShowing ? "none" : "flex";
+      addToggleBtn.style.display = isShowing ? "flex" : "none";
+      if (!isShowing) {
+        newTitleInput.focus();
+        newTitleInput.select();
+      }
+    };
+
+    popupCard.querySelector("#adblock-bm-add-cancel").onclick = () => {
+      addForm.style.display = "none";
+      addToggleBtn.style.display = "flex";
+    };
+
+    const handleSaveNew = async () => {
+      const title = newTitleInput.value.trim();
+      const memo = newMemoInput.value.trim();
+      if (!title) {
+        alert("북마크명을 입력해주세요.");
+        return;
+      }
+      if (isAlreadyBookmarked) {
+        await updateBookmark(existingBm.id, title, memo);
+      } else {
+        await addBookmark(title, memo);
+      }
+      renderBookmarks();
+    };
+
+    popupCard.querySelector("#adblock-bm-add-save").onclick = handleSaveNew;
+    const handleKeydownNew = (e) => {
+      if (e.key === "Enter") handleSaveNew();
+      if (e.key === "Escape") {
+        addForm.style.display = "none";
+        addToggleBtn.style.display = "flex";
+      }
+    };
+    newTitleInput.onkeydown = handleKeydownNew;
+    newMemoInput.onkeydown = handleKeydownNew;
+
+    popupCard.querySelectorAll(".adblock-bookmark-item").forEach(itemEl => {
+      const bmId = itemEl.getAttribute("data-bm-id");
+      const targetBm = siteBookmarks.find(b => b.id === bmId);
+      if (!targetBm) return;
+
+      const infoCol = itemEl.querySelector(".adblock-bookmark-info-col");
+      infoCol.onclick = () => {
+        const targetUrl = window.location.origin + targetBm.path;
+        window.location.href = targetUrl;
+      };
+
+      const editBtn = itemEl.querySelector(".adblock-bookmark-action-edit");
+      editBtn.onclick = (e) => {
+        e.stopPropagation();
+        itemEl.innerHTML = `
+          <div style="display: flex; flex-direction: column; gap: 6px; width: 100%;">
+            <input type="text" class="adblock-bookmark-input bm-edit-title" style="padding: 4px 8px; font-size: 11px;" placeholder="북마크명" value="${targetBm.title.replace(/"/g, '&quot;')}" />
+            <input type="text" class="adblock-bookmark-input bm-edit-memo" style="padding: 4px 8px; font-size: 11px;" placeholder="비고/설명 (선택)" value="${(targetBm.memo || '').replace(/"/g, '&quot;')}" />
+            <div style="display: flex; justify-content: flex-end; gap: 6px;">
+              <button class="adblock-bookmark-btn-sm adblock-bookmark-cancel-btn" style="padding: 3px 8px;">취소</button>
+              <button class="adblock-bookmark-btn-sm adblock-bookmark-save-btn" style="padding: 3px 8px;">저장</button>
+            </div>
+          </div>
+        `;
+        const editTitleInput = itemEl.querySelector(".bm-edit-title");
+        const editMemoInput = itemEl.querySelector(".bm-edit-memo");
+        editTitleInput.focus();
+        editTitleInput.select();
+
+        const saveEdit = async () => {
+          const valTitle = editTitleInput.value.trim();
+          const valMemo = editMemoInput.value.trim();
+          if (!valTitle) {
+            alert("북마크명을 입력해주세요.");
+            return;
+          }
+          if (valTitle !== targetBm.title || valMemo !== (targetBm.memo || "")) {
+            await updateBookmark(targetBm.id, valTitle, valMemo);
+          }
+          renderBookmarks();
+        };
+
+        itemEl.querySelector(".adblock-bookmark-save-btn").onclick = saveEdit;
+        itemEl.querySelector(".adblock-bookmark-cancel-btn").onclick = () => renderBookmarks();
+        const handleKeydownEdit = (ev) => {
+          if (ev.key === "Enter") saveEdit();
+          if (ev.key === "Escape") renderBookmarks();
+        };
+        editTitleInput.onkeydown = handleKeydownEdit;
+        editMemoInput.onkeydown = handleKeydownEdit;
+      };
+
+      const deleteBtn = itemEl.querySelector(".adblock-bookmark-action-delete");
+      deleteBtn.onclick = async (e) => {
+        e.stopPropagation();
+        if (confirm(`'${targetBm.title}' 북마크를 삭제하시겠습니까?`)) {
+          await deleteBookmark(targetBm.id);
+          renderBookmarks();
+        }
+      };
+    });
+  };
+
+  fabBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const isVisible = popupCard.style.display === "flex";
+    if (isVisible) {
+      popupCard.style.display = "none";
+    } else {
+      renderBookmarks();
+      const rect = container.getBoundingClientRect();
+      const cardHeight = 360;
+      const cardWidth = 320;
+
+      if (rect.top < cardHeight && window.innerHeight - rect.bottom > cardHeight) {
+        popupCard.style.top = "50px";
+        popupCard.style.bottom = "auto";
+      } else {
+        popupCard.style.bottom = "50px";
+        popupCard.style.top = "auto";
+      }
+
+      if (rect.left < cardWidth && window.innerWidth - rect.right > cardWidth) {
+        popupCard.style.left = "0";
+        popupCard.style.right = "auto";
+      } else {
+        popupCard.style.right = "0";
+        popupCard.style.left = "auto";
+      }
+
+      popupCard.style.display = "flex";
+    }
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!container.contains(e.target)) {
+      popupCard.style.display = "none";
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && popupCard.style.display === "flex") {
+      popupCard.style.display = "none";
+    }
+  });
+
+  const targetParent = document.body || document.documentElement;
+  if (targetParent) {
+    targetParent.appendChild(container);
+  }
+
+  makeElementDraggable(container, fabBtn, "adblock_bookmark_fab_position", { side: 'right', margin: 10, defaultBottom: 20 });
+
+  fetchBookmarksFromGist().then(() => {
+    if (popupCard.style.display === "flex") {
+      renderBookmarks();
+    }
+  });
+}
+
 function showGistConfigModal(onSaved) {
   const existing = document.getElementById("adblock-gist-modal");
   if (existing) existing.remove();
@@ -1280,6 +2077,10 @@ function showGistConfigModal(onSaved) {
         <label style="display: block; color: #a1a1aa; font-size: 12px; margin-bottom: 4px; font-weight: 500;">로그인설정 파일명:</label>
         <input type="text" id="adblock-gist-auth-file-input" placeholder="ad_selector_auth.json" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none;" value="${currentConfig.authFileName || 'ad_selector_auth.json'}" />
       </div>
+      <div>
+        <label style="display: block; color: #a1a1aa; font-size: 12px; margin-bottom: 4px; font-weight: 500;">북마크 파일명:</label>
+        <input type="text" id="adblock-gist-bookmark-file-input" placeholder="ad_selector_bookmarks.json" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none;" value="${currentConfig.bookmarkFileName || 'ad_selector_bookmarks.json'}" />
+      </div>
       <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
         <button id="adblock-gist-open-url" style="padding: 6px 12px; background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 500;">🔗 Gist 바로가기</button>
         <div style="display: flex; gap: 8px;">
@@ -1312,6 +2113,7 @@ function showGistConfigModal(onSaved) {
     const fileName = modalContainer.querySelector("#adblock-gist-file-input").value.trim() || "ad_selector_list.json";
     const blackListFileName = modalContainer.querySelector("#adblock-gist-blacklist-file-input").value.trim() || "ad_selector_blacklist.json";
     const authFileName = modalContainer.querySelector("#adblock-gist-auth-file-input").value.trim() || "ad_selector_auth.json";
+    const bookmarkFileName = modalContainer.querySelector("#adblock-gist-bookmark-file-input").value.trim() || "ad_selector_bookmarks.json";
 
     if (!gistId || !token) {
       alert("Gist ID와 GitHub Token은 필수 입력 항목입니다.");
@@ -1323,7 +2125,8 @@ function showGistConfigModal(onSaved) {
       token,
       fileName,
       blackListFileName,
-      authFileName
+      authFileName,
+      bookmarkFileName
     });
 
     close();
@@ -1422,8 +2225,8 @@ function isImageBlurEnabled() {
     }
   }
 
-  // 4. 기본값: 활성화 (true)
-  return true;
+  // 4. 기본값: 비활성화 (false)
+  return false;
 }
 
 function applyImageBlurStyle(enabled) {
@@ -1633,8 +2436,6 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
       }
       #adblock-ui-group {
         position: fixed !important;
-        left: 20px !important;
-        bottom: 20px !important;
         z-index: 2147483647 !important;
         display: flex !important;
         flex-direction: column !important;
@@ -1733,8 +2534,6 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
       }
       @media screen and (max-width: 768px) {
         #adblock-ui-group {
-          left: 12px !important;
-          bottom: 12px !important;
           gap: 6px !important;
         }
         .adblock-ui-fab-toggle {
@@ -1912,6 +2711,7 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
 
   groups.appendChild(menuWrapper);
   groups.appendChild(fabToggle);
+  fabToggle.style.cursor = 'grab';
   
   if (document.body) {
     document.body.appendChild(groups);
@@ -1922,6 +2722,8 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
       }
     });
   }
+
+  makeElementDraggable(groups, fabToggle, "adblock_fab_position", { side: 'left', margin: 10, defaultBottom: 20 });
 }
 
 function clipboardEventListener({ handleClick }) {
@@ -5171,6 +5973,7 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
   };
 
   setupFloatingButton();
+  initBookmarkWidget();
 
   function ensureFloatingButtonExists() {
     if (window.__adblock_isFloatingHidden) return;
@@ -5186,6 +5989,10 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
         setupFloatingButton();
         uiGroup = document.getElementById("adblock-ui-group");
       }
+    }
+
+    if (!document.getElementById("adblock-bookmark-ui-group")) {
+      initBookmarkWidget();
     }
 
     if (uiGroup && targetParent) {
