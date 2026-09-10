@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202609101555
+// @version      202609101655
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -1230,124 +1230,227 @@ if (typeof document !== "undefined") {
    ========================================================================== */
 
 /**
- * 플로팅 버튼을 세로(위/아래)로만 드래그하여 이동할 수 있게 하고,
- * 가로는 지정한 쪽(left 또는 right) 10px에 완전 고정하며, 창 크기 축소 시 창 하단 + 10px 위치로 자동 보정합니다.
+ * 플로팅 버튼을 마우스 및 모바일 터치(Pointer Events)로 드래그할 수 있게 하고,
+ * 화면 절반(50%)을 기준으로 왼쪽/오른쪽 벽면(10px)에 스냅하며, 창 크기 축소 시 창 하단 + 10px 위치로 자동 보정합니다.
  */
-function makeElementDraggable(element, handle, storageKey, options = {}) {
+/**
+ * User-Agent 기반 모바일 웹 환경 판별
+ */
+function isMobileEnv() {
+  const ua = navigator.userAgent || "";
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+}
+
+/**
+ * 플랫폼(모바일 / PC)별 독립 스토리지 키 생성
+ */
+function getPlatformStorageKey(baseKey) {
+  const platform = isMobileEnv() ? "mobile" : "pc";
+  return `${baseKey}_${platform}`;
+}
+
+/**
+ * 플로팅 버튼 간 충돌 감지 및 북마크 버튼 상단 자동 배치
+ * 두 버튼이 같은 벽면(left 또는 right)에 있고 수직으로 겹칠 때, 북마크 버튼을 기본 버튼 위로 배치
+ */
+function resolveFabCollision() {
+  const defaultEl = document.getElementById("adblock-ui-group");
+  const bookmarkEl = document.getElementById("adblock-bookmark-ui-group");
+  if (!defaultEl || !bookmarkEl) return;
+
+  const defStorageKey = getPlatformStorageKey("adblock_fab_position");
+  const bmStorageKey = getPlatformStorageKey("adblock_bookmark_fab_position");
+
+  const defPos = GM_getValue(defStorageKey, null);
+  const bmPos = GM_getValue(bmStorageKey, null);
+
+  const defSide = (defPos && (defPos.side === 'left' || defPos.side === 'right')) ? defPos.side : 'left';
+  const bmSide = (bmPos && (bmPos.side === 'left' || bmPos.side === 'right')) ? bmPos.side : 'right';
+
+  if (defSide === bmSide) {
+    const fabSize = (window.innerWidth <= 768) ? 36 : 42;
+    const minGap = 8;
+    const spacing = fabSize + minGap;
+
+    const winH = window.innerHeight;
+    const defRect = defaultEl.getBoundingClientRect();
+    const bmRect = bookmarkEl.getBoundingClientRect();
+
+    if (!defRect.height || !bmRect.height) return;
+
+    const defBottom = winH - defRect.bottom;
+    const bmBottom = winH - bmRect.bottom;
+
+    // 만약 두 버튼의 bottom 위치 차이가 spacing 미만이면 겹침 발생
+    if (Math.abs(bmBottom - defBottom) < spacing) {
+      // 북마크 버튼이 기본 버튼의 위쪽(더 큰 bottom)에 위치하도록 자동 배치
+      let targetBmBottom = defBottom + spacing;
+      if (targetBmBottom > winH - fabSize - 10) {
+        targetBmBottom = Math.max(10, winH - fabSize - 10);
+      }
+      bookmarkEl.style.setProperty("bottom", `${targetBmBottom}px`, "important");
+      bookmarkEl.style.setProperty("top", "auto", "important");
+      GM_setValue(bmStorageKey, { bottom: targetBmBottom, side: bmSide });
+    }
+  }
+}
+
+function makeElementDraggable(element, handle, baseStorageKey, options = {}) {
   if (!element || !handle) return;
 
-  const side = options.side || 'left'; // 'left' 또는 'right'
+  const storageKey = getPlatformStorageKey(baseStorageKey);
+  const defaultSide = options.defaultSide || options.side || 'left';
   const margin = typeof options.margin === 'number' ? options.margin : 10;
   const defaultBottom = typeof options.defaultBottom === 'number' ? options.defaultBottom : 20;
 
-  const savedPos = GM_getValue(storageKey, null);
+  // 기존 키(baseStorageKey)에서 초기 1회 마이그레이션 지원
+  let savedPos = GM_getValue(storageKey, null);
+  if (!savedPos) {
+    const legacyPos = GM_getValue(baseStorageKey, null);
+    if (legacyPos) {
+      savedPos = legacyPos;
+      try {
+        GM_setValue(storageKey, legacyPos);
+      } catch (e) {}
+    }
+  }
 
-  const applyHorizontal = () => {
+  let currentSide = (savedPos && (savedPos.side === 'left' || savedPos.side === 'right')) ? savedPos.side : defaultSide;
+
+  // 이전 버전의 top 저장 데이터 호환
+  let initialBottom = defaultBottom;
+  if (savedPos) {
+    if (typeof savedPos.bottom === 'number') {
+      initialBottom = savedPos.bottom;
+    } else if (typeof savedPos.top === 'number') {
+      const fabSize = (window.innerWidth <= 768) ? 36 : 42;
+      initialBottom = Math.max(10, window.innerHeight - savedPos.top - fabSize);
+    }
+  }
+
+  const applyHorizontal = (side) => {
+    currentSide = side;
     if (side === 'left') {
       element.style.setProperty("left", `${margin}px`, "important");
       element.style.setProperty("right", "auto", "important");
+      element.style.setProperty("align-items", "flex-start", "important");
     } else {
       element.style.setProperty("right", `${margin}px`, "important");
       element.style.setProperty("left", "auto", "important");
+      element.style.setProperty("align-items", "flex-end", "important");
     }
   };
 
-  const applyPosition = (pos) => {
-    applyHorizontal();
-    if (!pos) return;
-    if (typeof pos.top === "number") {
-      element.style.setProperty("top", `${pos.top}px`, "important");
-      element.style.setProperty("bottom", "auto", "important");
-    } else if (typeof pos.bottom === "number") {
-      element.style.setProperty("bottom", `${pos.bottom}px`, "important");
-      element.style.setProperty("top", "auto", "important");
-    }
-  };
-
-  const clampPosition = () => {
-    applyHorizontal();
-    const rect = element.getBoundingClientRect();
-    if (!rect.width || !rect.height) return;
-
+  const setBottomPosition = (bottomPx, shouldSave = false) => {
     const winH = window.innerHeight;
-    let newTop = rect.top;
-    let changed = false;
+    const fabSize = (window.innerWidth <= 768) ? 36 : 42;
+    const maxBottom = Math.max(10, winH - fabSize - 10);
+    const clampedBottom = Math.min(maxBottom, Math.max(10, bottomPx));
 
-    // 창의 높이가 줄어들어서 위치에 있지 못하게 되면 창의 하단 + 10px 의 위치에 유지
-    if (rect.bottom > winH - 10) {
-      newTop = Math.max(10, winH - rect.height - 10);
-      changed = true;
-    }
-    if (newTop < 10) {
-      newTop = 10;
-      changed = true;
-    }
+    element.style.setProperty("bottom", `${clampedBottom}px`, "important");
+    element.style.setProperty("top", "auto", "important");
 
-    if (changed || !savedPos) {
-      element.style.setProperty("top", `${newTop}px`, "important");
-      element.style.setProperty("bottom", "auto", "important");
-      GM_setValue(storageKey, { top: newTop });
+    if (shouldSave) {
+      GM_setValue(storageKey, { bottom: bottomPx, side: currentSide });
     }
   };
 
-  if (savedPos && typeof savedPos.top === "number") {
-    applyPosition(savedPos);
-    requestAnimationFrame(() => clampPosition());
-  } else {
-    applyPosition({ bottom: defaultBottom });
-    requestAnimationFrame(() => clampPosition());
-  }
+  applyHorizontal(currentSide);
+  setBottomPosition(initialBottom, false);
 
   window.addEventListener("resize", () => {
-    clampPosition();
+    applyHorizontal(currentSide);
+    const pos = GM_getValue(storageKey, null);
+    const bot = (pos && typeof pos.bottom === 'number') ? pos.bottom : initialBottom;
+    setBottomPosition(bot, false);
+    resolveFabCollision();
   });
 
-  handle.style.cursor = "ns-resize";
+  // 터치 제스처 스크롤 방지 및 커서 스타일
+  handle.style.setProperty("touch-action", "none", "important");
+  handle.style.setProperty("user-select", "none", "important");
+  handle.style.cursor = "grab";
 
   let isDragging = false;
   let hasMoved = false;
-  let startY = 0;
-  let initialTop = 0;
+  let startX = 0, startY = 0;
+  let initialLeft = 0, dragStartBottom = 0;
+  let activePointerId = null;
 
-  handle.addEventListener("mousedown", (e) => {
-    if (e.button !== 0) return;
+  const onPointerDown = (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+
     const rect = element.getBoundingClientRect();
+    const winH = window.innerHeight;
+    startX = e.clientX;
     startY = e.clientY;
-    initialTop = rect.top;
+    initialLeft = rect.left;
+    dragStartBottom = winH - rect.bottom;
     isDragging = true;
     hasMoved = false;
+    activePointerId = e.pointerId;
 
-    const onMouseMove = (moveEvent) => {
-      if (!isDragging) return;
+    try {
+      handle.setPointerCapture(e.pointerId);
+    } catch (err) {}
+
+    handle.style.cursor = "grabbing";
+
+    const onPointerMove = (moveEvent) => {
+      if (!isDragging || moveEvent.pointerId !== activePointerId) return;
+
+      const dx = moveEvent.clientX - startX;
       const dy = moveEvent.clientY - startY;
 
-      if (!hasMoved && Math.abs(dy) > 4) {
+      if (!hasMoved && Math.hypot(dx, dy) > 5) {
         hasMoved = true;
       }
 
       if (hasMoved) {
-        let curTop = initialTop + dy;
-        const winH = window.innerHeight;
+        const winW = window.innerWidth;
+        const curWinH = window.innerHeight;
+        const elW = rect.width;
         const elH = rect.height;
 
-        // 세로 위치만 10px 마진 클램핑
-        curTop = Math.max(10, Math.min(winH - elH - 10, curTop));
+        let curLeft = initialLeft + dx;
+        let curBottom = dragStartBottom - dy; // 아래로 드래그 시 dy > 0 -> bottom 감소, 위로 드래그 시 dy < 0 -> bottom 증가
 
-        element.style.setProperty("top", `${curTop}px`, "important");
-        element.style.setProperty("bottom", "auto", "important");
-        applyHorizontal();
+        curLeft = Math.max(10, Math.min(winW - elW - 10, curLeft));
+        curBottom = Math.max(10, Math.min(curWinH - elH - 10, curBottom));
+
+        element.style.setProperty("left", `${curLeft}px`, "important");
+        element.style.setProperty("bottom", `${curBottom}px`, "important");
+        element.style.setProperty("right", "auto", "important");
+        element.style.setProperty("top", "auto", "important");
       }
     };
 
-    const onMouseUp = () => {
-      if (!isDragging) return;
+    const onPointerUp = (upEvent) => {
+      if (!isDragging || (upEvent && upEvent.pointerId !== activePointerId)) return;
       isDragging = false;
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
+      activePointerId = null;
+
+      handle.removeEventListener("pointermove", onPointerMove);
+      handle.removeEventListener("pointerup", onPointerUp);
+      handle.removeEventListener("pointercancel", onPointerUp);
+
+      handle.style.cursor = "grab";
 
       if (hasMoved) {
         const curRect = element.getBoundingClientRect();
-        GM_setValue(storageKey, { top: curRect.top });
+        const winW = window.innerWidth;
+        const curWinH = window.innerHeight;
+        const centerX = curRect.left + curRect.width / 2;
+
+        // 화면 절반(50%) 기준 좌/우 스냅 결정
+        const newSide = (centerX < winW / 2) ? 'left' : 'right';
+        applyHorizontal(newSide);
+
+        const finalBottom = Math.max(10, Math.min(curWinH - curRect.height - 10, curWinH - curRect.bottom));
+        setBottomPosition(finalBottom, true);
+
+        // 충돌 검사 및 북마크 버튼 상단 배치
+        resolveFabCollision();
 
         // 클릭 이벤트 오발동 방지
         const captureClick = (clickEvent) => {
@@ -1359,9 +1462,15 @@ function makeElementDraggable(element, handle, storageKey, options = {}) {
       }
     };
 
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-  });
+    handle.addEventListener("pointermove", onPointerMove);
+    handle.addEventListener("pointerup", onPointerUp);
+    handle.addEventListener("pointercancel", onPointerUp);
+  };
+
+  handle.addEventListener("pointerdown", onPointerDown);
+
+  // 초기 충돌 조정 (두 버튼이 모두 렌더링된 후)
+  setTimeout(resolveFabCollision, 200);
 }
 
 function getBookmarkConfigs() {
@@ -1538,7 +1647,7 @@ function initBookmarkWidget() {
     styleEl.textContent = `
       #adblock-bookmark-ui-group {
         position: fixed !important;
-        z-index: 2147483646 !important;
+        z-index: 2147483648 !important;
         display: flex !important;
         flex-direction: column !important;
         align-items: flex-end !important;
@@ -1557,26 +1666,24 @@ function initBookmarkWidget() {
         border-radius: 50% !important;
         background: linear-gradient(135deg, #6366f1 0%, #4338ca 100%) !important;
         color: #ffffff !important;
-        border: 1px solid rgba(255, 255, 255, 0.25) !important;
+        border: 1px solid rgba(255, 255, 255, 0.2) !important;
         box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35) !important;
         cursor: grab !important;
         display: flex !important;
         align-items: center !important;
         justify-content: center !important;
-        font-size: 19px !important;
-        transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease !important;
+        font-size: 18px !important;
+        transition: transform 0.2s ease, background 0.2s ease !important;
         outline: none !important;
         margin: 0 !important;
         padding: 0 !important;
+        float: none !important;
         line-height: 1 !important;
+        position: relative !important;
+        pointer-events: auto !important;
       }
       .adblock-bookmark-fab:hover {
-        transform: scale(1.1) !important;
-        box-shadow: 0 6px 18px rgba(99, 102, 241, 0.5) !important;
-      }
-      .adblock-bookmark-fab:active {
-        cursor: grabbing !important;
-        transform: scale(0.95) !important;
+        transform: scale(1.08) !important;
       }
       .adblock-bookmark-card {
         position: absolute !important;
@@ -1772,6 +1879,13 @@ function initBookmarkWidget() {
         color: #71717a !important;
         font-size: 12px !important;
         line-height: 1.5 !important;
+      }
+      @media screen and (max-width: 768px) {
+        .adblock-bookmark-fab {
+          width: 36px !important;
+          height: 36px !important;
+          font-size: 15px !important;
+        }
       }
     `;
     (document.head || document.documentElement).appendChild(styleEl);
@@ -2012,7 +2126,7 @@ function initBookmarkWidget() {
     targetParent.appendChild(container);
   }
 
-  makeElementDraggable(container, fabBtn, "adblock_bookmark_fab_position", { side: 'right', margin: 10, defaultBottom: 20 });
+  makeElementDraggable(container, fabBtn, "adblock_bookmark_fab_position", { defaultSide: 'right', margin: 10, defaultBottom: 20 });
 
   fetchBookmarksFromGist().then(() => {
     if (popupCard.style.display === "flex") {
@@ -2723,7 +2837,7 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
     });
   }
 
-  makeElementDraggable(groups, fabToggle, "adblock_fab_position", { side: 'left', margin: 10, defaultBottom: 20 });
+  makeElementDraggable(groups, fabToggle, "adblock_fab_position", { defaultSide: 'left', margin: 10, defaultBottom: 20 });
 }
 
 function clipboardEventListener({ handleClick }) {
