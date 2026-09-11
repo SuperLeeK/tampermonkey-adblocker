@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202609110843
+// @version      202609111111
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -1553,7 +1553,7 @@ function getBookmarksForCurrentSite(data) {
   return results.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 }
 
-async function addBookmark(title, memo = "") {
+async function addBookmark(title, memo = "", urlPath = "") {
   const data = getBookmarkConfigs();
   if (!data.bookmarks) data.bookmarks = {};
 
@@ -1562,12 +1562,16 @@ async function addBookmark(title, memo = "") {
     data.bookmarks[domainKey] = [];
   }
 
-  const currentPath = window.location.pathname + window.location.search + window.location.hash;
+  let finalPath = (urlPath || "").trim();
+  if (!finalPath) {
+    finalPath = window.location.pathname + window.location.search + window.location.hash;
+  }
+
   const newBm = {
     id: "bm_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
     title: (title || document.title || "새 북마크").trim(),
     memo: (memo || "").trim(),
-    path: currentPath,
+    path: finalPath,
     createdAt: Date.now()
   };
 
@@ -1583,7 +1587,7 @@ async function addBookmark(title, memo = "") {
   return newBm;
 }
 
-async function updateBookmark(id, newTitle, newMemo = "") {
+async function updateBookmark(id, newTitle, newMemo = "", newUrlPath = null) {
   const data = getBookmarkConfigs();
   if (!data.bookmarks) return;
 
@@ -1594,6 +1598,9 @@ async function updateBookmark(id, newTitle, newMemo = "") {
     if (target) {
       target.title = (newTitle || "").trim();
       target.memo = (newMemo || "").trim();
+      if (newUrlPath !== null && typeof newUrlPath === "string" && newUrlPath.trim()) {
+        target.path = newUrlPath.trim();
+      }
       target.updatedAt = Date.now();
       found = true;
       break;
@@ -1771,7 +1778,6 @@ function initBookmarkWidget() {
         display: flex !important;
         flex-direction: column !important;
         gap: 8px !important;
-        margin-top: 8px !important;
       }
       .adblock-bookmark-input {
         width: 100% !important;
@@ -1914,13 +1920,14 @@ function initBookmarkWidget() {
     const siteBookmarks = getBookmarksForCurrentSite(data);
     const openInNewTab = GM_getValue("adblocker_bookmark_open_new_tab", false);
 
+    const currentUrl = window.location.href;
     const currentPath = window.location.pathname + window.location.search + window.location.hash;
-    const existingBm = siteBookmarks.find(b => b.path === currentPath);
+    const existingBm = siteBookmarks.find(b => b.path === currentPath || b.path === currentUrl);
     const isAlreadyBookmarked = !!existingBm;
 
+    const initialUrl = isAlreadyBookmarked ? existingBm.path : currentUrl;
     const initialTitle = isAlreadyBookmarked ? existingBm.title : (document.title || '');
     const initialMemo = isAlreadyBookmarked ? (existingBm.memo || '') : '';
-    const toggleBtnText = isAlreadyBookmarked ? '✏️ 현재 페이지 북마크 수정' : '➕ 현재 페이지 추가';
     const actionBtnText = isAlreadyBookmarked ? '수정' : '저장';
 
     popupCard.innerHTML = `
@@ -1935,10 +1942,8 @@ function initBookmarkWidget() {
         </div>
       </div>
       <div class="adblock-bookmark-add-area">
-        <button class="adblock-bookmark-add-toggle-btn">
-          <span>${toggleBtnText}</span>
-        </button>
-        <div class="adblock-bookmark-add-form" style="display: none;">
+        <div class="adblock-bookmark-add-form" style="display: flex;">
+          <input type="text" class="adblock-bookmark-input" id="adblock-bm-new-url" placeholder="URL 입력 (예: https://... 또는 /path)" value="${initialUrl.replace(/"/g, '&quot;')}" />
           <input type="text" class="adblock-bookmark-input" id="adblock-bm-new-title" placeholder="북마크명 입력" value="${initialTitle.replace(/"/g, '&quot;')}" />
           <input type="text" class="adblock-bookmark-input" id="adblock-bm-new-memo" placeholder="비고/설명 (선택사항)" value="${initialMemo.replace(/"/g, '&quot;')}" />
           <div class="adblock-bookmark-form-actions">
@@ -1957,7 +1962,7 @@ function initBookmarkWidget() {
         ${siteBookmarks.length === 0 ? `
           <li class="adblock-bookmark-empty">
             등록된 북마크가 없습니다.<br/>
-            상단의 <strong>+ 현재 페이지 추가</strong>를 눌러 등록해보세요!
+            상단의 폼에서 북마크를 등록해보세요!
           </li>
         ` : siteBookmarks.map(bm => `
           <li class="adblock-bookmark-item" data-bm-id="${bm.id}">
@@ -1978,8 +1983,8 @@ function initBookmarkWidget() {
       popupCard.style.display = "none";
     };
 
-    const addToggleBtn = popupCard.querySelector(".adblock-bookmark-add-toggle-btn");
     const addForm = popupCard.querySelector(".adblock-bookmark-add-form");
+    const newUrlInput = popupCard.querySelector("#adblock-bm-new-url");
     const newTitleInput = popupCard.querySelector("#adblock-bm-new-title");
     const newMemoInput = popupCard.querySelector("#adblock-bm-new-memo");
     const newTabChk = popupCard.querySelector("#adblock-bm-newtab-chk");
@@ -1990,32 +1995,28 @@ function initBookmarkWidget() {
       };
     }
 
-    addToggleBtn.onclick = () => {
-      const isShowing = addForm.style.display !== "none";
-      addForm.style.display = isShowing ? "none" : "flex";
-      addToggleBtn.style.display = isShowing ? "flex" : "none";
-      if (!isShowing) {
-        newTitleInput.focus();
-        newTitleInput.select();
-      }
-    };
-
     popupCard.querySelector("#adblock-bm-add-cancel").onclick = () => {
-      addForm.style.display = "none";
-      addToggleBtn.style.display = "flex";
+      newUrlInput.value = currentUrl;
+      newTitleInput.value = document.title || "";
+      newMemoInput.value = "";
     };
 
     const handleSaveNew = async () => {
+      const url = newUrlInput.value.trim();
       const title = newTitleInput.value.trim();
       const memo = newMemoInput.value.trim();
+      if (!url) {
+        alert("URL을 입력해주세요.");
+        return;
+      }
       if (!title) {
         alert("북마크명을 입력해주세요.");
         return;
       }
       if (isAlreadyBookmarked) {
-        await updateBookmark(existingBm.id, title, memo);
+        await updateBookmark(existingBm.id, title, memo, url);
       } else {
-        await addBookmark(title, memo);
+        await addBookmark(title, memo, url);
       }
       renderBookmarks();
     };
@@ -2024,10 +2025,12 @@ function initBookmarkWidget() {
     const handleKeydownNew = (e) => {
       if (e.key === "Enter") handleSaveNew();
       if (e.key === "Escape") {
-        addForm.style.display = "none";
-        addToggleBtn.style.display = "flex";
+        newUrlInput.value = currentUrl;
+        newTitleInput.value = document.title || "";
+        newMemoInput.value = "";
       }
     };
+    newUrlInput.onkeydown = handleKeydownNew;
     newTitleInput.onkeydown = handleKeydownNew;
     newMemoInput.onkeydown = handleKeydownNew;
 
@@ -2038,7 +2041,11 @@ function initBookmarkWidget() {
 
       const infoCol = itemEl.querySelector(".adblock-bookmark-info-col");
       infoCol.onclick = () => {
-        const targetUrl = window.location.origin + targetBm.path;
+        const rawPath = targetBm.path || "";
+        const targetUrl = (rawPath.startsWith("http://") || rawPath.startsWith("https://"))
+          ? rawPath
+          : window.location.origin + (rawPath.startsWith("/") ? rawPath : "/" + rawPath);
+
         if (GM_getValue("adblocker_bookmark_open_new_tab", false)) {
           if (typeof GM_openInTab !== "undefined") {
             GM_openInTab(targetUrl, { active: false, insert: true });
@@ -2055,6 +2062,7 @@ function initBookmarkWidget() {
         e.stopPropagation();
         itemEl.innerHTML = `
           <div style="display: flex; flex-direction: column; gap: 6px; width: 100%;">
+            <input type="text" class="adblock-bookmark-input bm-edit-url" style="padding: 4px 8px; font-size: 11px;" placeholder="URL 입력" value="${(targetBm.path || '').replace(/"/g, '&quot;')}" />
             <input type="text" class="adblock-bookmark-input bm-edit-title" style="padding: 4px 8px; font-size: 11px;" placeholder="북마크명" value="${targetBm.title.replace(/"/g, '&quot;')}" />
             <input type="text" class="adblock-bookmark-input bm-edit-memo" style="padding: 4px 8px; font-size: 11px;" placeholder="비고/설명 (선택)" value="${(targetBm.memo || '').replace(/"/g, '&quot;')}" />
             <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
@@ -2069,6 +2077,7 @@ function initBookmarkWidget() {
             </div>
           </div>
         `;
+        const editUrlInput = itemEl.querySelector(".bm-edit-url");
         const editTitleInput = itemEl.querySelector(".bm-edit-title");
         const editMemoInput = itemEl.querySelector(".bm-edit-memo");
         const editNewTabChk = itemEl.querySelector(".adblock-bm-edit-newtab-chk");
@@ -2077,18 +2086,23 @@ function initBookmarkWidget() {
             GM_setValue("adblocker_bookmark_open_new_tab", ev.target.checked);
           };
         }
-        editTitleInput.focus();
-        editTitleInput.select();
+        editUrlInput.focus();
+        editUrlInput.select();
 
         const saveEdit = async () => {
+          const valUrl = editUrlInput.value.trim();
           const valTitle = editTitleInput.value.trim();
           const valMemo = editMemoInput.value.trim();
+          if (!valUrl) {
+            alert("URL을 입력해주세요.");
+            return;
+          }
           if (!valTitle) {
             alert("북마크명을 입력해주세요.");
             return;
           }
-          if (valTitle !== targetBm.title || valMemo !== (targetBm.memo || "")) {
-            await updateBookmark(targetBm.id, valTitle, valMemo);
+          if (valTitle !== targetBm.title || valMemo !== (targetBm.memo || "") || valUrl !== targetBm.path) {
+            await updateBookmark(targetBm.id, valTitle, valMemo, valUrl);
           }
           renderBookmarks();
         };
@@ -2099,6 +2113,7 @@ function initBookmarkWidget() {
           if (ev.key === "Enter") saveEdit();
           if (ev.key === "Escape") renderBookmarks();
         };
+        editUrlInput.onkeydown = handleKeydownEdit;
         editTitleInput.onkeydown = handleKeydownEdit;
         editMemoInput.onkeydown = handleKeydownEdit;
       };
