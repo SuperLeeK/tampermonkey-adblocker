@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202609110808
+// @version      202609110843
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_openInTab
 // @grant        GM_webRequest
 // @grant        GM_registerMenuCommand
 // @grant        unsafeWindow
@@ -1788,7 +1789,8 @@ function initBookmarkWidget() {
       }
       .adblock-bookmark-form-actions {
         display: flex !important;
-        justify-content: flex-end !important;
+        justify-content: space-between !important;
+        align-items: center !important;
         gap: 6px !important;
       }
       .adblock-bookmark-btn-sm {
@@ -1910,6 +1912,7 @@ function initBookmarkWidget() {
   const renderBookmarks = () => {
     const data = getBookmarkConfigs();
     const siteBookmarks = getBookmarksForCurrentSite(data);
+    const openInNewTab = GM_getValue("adblocker_bookmark_open_new_tab", false);
 
     const currentPath = window.location.pathname + window.location.search + window.location.hash;
     const existingBm = siteBookmarks.find(b => b.path === currentPath);
@@ -1939,8 +1942,14 @@ function initBookmarkWidget() {
           <input type="text" class="adblock-bookmark-input" id="adblock-bm-new-title" placeholder="북마크명 입력" value="${initialTitle.replace(/"/g, '&quot;')}" />
           <input type="text" class="adblock-bookmark-input" id="adblock-bm-new-memo" placeholder="비고/설명 (선택사항)" value="${initialMemo.replace(/"/g, '&quot;')}" />
           <div class="adblock-bookmark-form-actions">
-            <button class="adblock-bookmark-btn-sm adblock-bookmark-cancel-btn" id="adblock-bm-add-cancel">취소</button>
-            <button class="adblock-bookmark-btn-sm adblock-bookmark-save-btn" id="adblock-bm-add-save">${actionBtnText}</button>
+            <label style="display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #a1a1aa; cursor: pointer; user-select: none;">
+              <input type="checkbox" id="adblock-bm-newtab-chk" style="width: 14px; height: 14px; accent-color: #6366f1; cursor: pointer; margin: 0;" ${openInNewTab ? 'checked' : ''} />
+              <span>새 탭으로 열기</span>
+            </label>
+            <div style="display: flex; gap: 6px;">
+              <button class="adblock-bookmark-btn-sm adblock-bookmark-cancel-btn" id="adblock-bm-add-cancel">취소</button>
+              <button class="adblock-bookmark-btn-sm adblock-bookmark-save-btn" id="adblock-bm-add-save">${actionBtnText}</button>
+            </div>
           </div>
         </div>
       </div>
@@ -1973,6 +1982,13 @@ function initBookmarkWidget() {
     const addForm = popupCard.querySelector(".adblock-bookmark-add-form");
     const newTitleInput = popupCard.querySelector("#adblock-bm-new-title");
     const newMemoInput = popupCard.querySelector("#adblock-bm-new-memo");
+    const newTabChk = popupCard.querySelector("#adblock-bm-newtab-chk");
+
+    if (newTabChk) {
+      newTabChk.onchange = (e) => {
+        GM_setValue("adblocker_bookmark_open_new_tab", e.target.checked);
+      };
+    }
 
     addToggleBtn.onclick = () => {
       const isShowing = addForm.style.display !== "none";
@@ -2023,7 +2039,15 @@ function initBookmarkWidget() {
       const infoCol = itemEl.querySelector(".adblock-bookmark-info-col");
       infoCol.onclick = () => {
         const targetUrl = window.location.origin + targetBm.path;
-        window.location.href = targetUrl;
+        if (GM_getValue("adblocker_bookmark_open_new_tab", false)) {
+          if (typeof GM_openInTab !== "undefined") {
+            GM_openInTab(targetUrl, { active: false, insert: true });
+          } else {
+            window.open(targetUrl, "_blank");
+          }
+        } else {
+          window.location.href = targetUrl;
+        }
       };
 
       const editBtn = itemEl.querySelector(".adblock-bookmark-action-edit");
@@ -2033,14 +2057,26 @@ function initBookmarkWidget() {
           <div style="display: flex; flex-direction: column; gap: 6px; width: 100%;">
             <input type="text" class="adblock-bookmark-input bm-edit-title" style="padding: 4px 8px; font-size: 11px;" placeholder="북마크명" value="${targetBm.title.replace(/"/g, '&quot;')}" />
             <input type="text" class="adblock-bookmark-input bm-edit-memo" style="padding: 4px 8px; font-size: 11px;" placeholder="비고/설명 (선택)" value="${(targetBm.memo || '').replace(/"/g, '&quot;')}" />
-            <div style="display: flex; justify-content: flex-end; gap: 6px;">
-              <button class="adblock-bookmark-btn-sm adblock-bookmark-cancel-btn" style="padding: 3px 8px;">취소</button>
-              <button class="adblock-bookmark-btn-sm adblock-bookmark-save-btn" style="padding: 3px 8px;">저장</button>
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
+              <label style="display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #a1a1aa; cursor: pointer; user-select: none;">
+                <input type="checkbox" class="adblock-bm-edit-newtab-chk" style="width: 14px; height: 14px; accent-color: #6366f1; cursor: pointer; margin: 0;" ${GM_getValue("adblocker_bookmark_open_new_tab", false) ? 'checked' : ''} />
+                <span>새 탭으로 열기</span>
+              </label>
+              <div style="display: flex; gap: 6px;">
+                <button class="adblock-bookmark-btn-sm adblock-bookmark-cancel-btn" style="padding: 3px 8px;">취소</button>
+                <button class="adblock-bookmark-btn-sm adblock-bookmark-save-btn" style="padding: 3px 8px;">저장</button>
+              </div>
             </div>
           </div>
         `;
         const editTitleInput = itemEl.querySelector(".bm-edit-title");
         const editMemoInput = itemEl.querySelector(".bm-edit-memo");
+        const editNewTabChk = itemEl.querySelector(".adblock-bm-edit-newtab-chk");
+        if (editNewTabChk) {
+          editNewTabChk.onchange = (ev) => {
+            GM_setValue("adblocker_bookmark_open_new_tab", ev.target.checked);
+          };
+        }
         editTitleInput.focus();
         editTitleInput.select();
 
