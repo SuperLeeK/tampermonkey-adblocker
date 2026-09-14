@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202609141121
+// @version      202609141125
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -340,19 +340,6 @@ function registerTampermonkeyMenuCommands(isBlacklisted = false) {
         } else {
           if (typeof Toast !== "undefined" && Toast.show) Toast.show("설정 제거창을 열 수 없습니다.");
         }
-      });
-
-      const isAntiDebuggerEnabled = GM_getValue("adblock_anti_debugger_enabled", true);
-      const antiDebuggerLabel = isAntiDebuggerEnabled ? "🛡️ 디버거 방어: ON" : "🛡️ 디버거 방어: OFF";
-      GM_registerMenuCommand(antiDebuggerLabel, () => {
-        const nextState = !isAntiDebuggerEnabled;
-        GM_setValue("adblock_anti_debugger_enabled", nextState);
-        if (typeof Toast !== "undefined" && Toast.show) {
-          Toast.show(`안티 디버거 방어를 ${nextState ? '활성화' : '비활성화'}했습니다. 새로고침합니다.`);
-        } else {
-          alert(`안티 디버거 방어를 ${nextState ? '활성화' : '비활성화'}했습니다. 새로고침합니다.`);
-        }
-        setTimeout(() => window.location.reload(), 600);
       });
 
       GM_registerMenuCommand("⛔ 블랙리스트 추가", () => {
@@ -3033,26 +3020,6 @@ function clipboardEventListener({ handleClick }) {
         }
       }, true);
 
-      // --- Anti-DevTools Detection Defense ---
-      // 1. Function("debugger") 및 eval("debugger") 무력화
-      try {
-        const origFunction = Function.prototype.constructor;
-        const handler = {
-          construct(target, args) {
-            if (args[0] && typeof args[0] === 'string' && args[0].includes('debugger')) {
-              return function() {};
-            }
-            return new target(...args);
-          },
-          apply(target, thisArg, args) {
-            if (args[0] && typeof args[0] === 'string' && args[0].includes('debugger')) {
-              return function() {};
-            }
-            return target.apply(thisArg, args);
-          }
-        };
-        window.Function = new Proxy(Function, handler);
-      } catch (e) {}
 
       // 2. console.clear() 및 감지 트랩 무력화
       try {
@@ -3930,100 +3897,7 @@ function applyAdblockRules(coverSelectors = [], displayNoneSelectors = [], custo
   applyAdblockRulesSync(coverSelectors, displayNoneSelectors, customStyleList);
 }
 
-// 🛡️ 안티 디버거(debugger; 무한 루프) 무력화 모듈
-function initAntiDebugger() {
-  const isEnabled = GM_getValue("adblock_anti_debugger_enabled", true);
-  if (!isEnabled) return;
-
-  try {
-    const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-    if (!win) return;
-
-    // 1. Function 생성자 및 Function.prototype.constructor 훅
-    const OriginalFunction = win.Function;
-    const hookedFunction = function(...args) {
-      if (args.length > 0) {
-        const lastArg = args[args.length - 1];
-        if (typeof lastArg === 'string' && /debugger\s*;?/i.test(lastArg)) {
-          const sanitized = lastArg.replace(/debugger\s*;?/gi, '/* debugger blocked */');
-          args[args.length - 1] = sanitized;
-          if (!sanitized.replace(/\/\*[\s\S]*?\*\//g, '').trim()) {
-            return function() {};
-          }
-        }
-      }
-      if (new.target) {
-        return Reflect.construct(OriginalFunction, args, new.target);
-      }
-      return OriginalFunction.apply(this, args);
-    };
-
-    hookedFunction.prototype = OriginalFunction.prototype;
-    try {
-      win.Function = hookedFunction;
-      win.Function.prototype.constructor = hookedFunction;
-    } catch (e) {}
-
-    // 2. eval 훅 (eval("debugger") 무력화)
-    if (win.eval) {
-      const origEval = win.eval;
-      win.eval = function(code) {
-        if (typeof code === 'string' && /debugger\s*;?/i.test(code)) {
-          code = code.replace(/debugger\s*;?/gi, '/* debugger blocked */');
-        }
-        return origEval.call(this, code);
-      };
-    }
-
-    // 3. setInterval / setTimeout 타이머 훅 (debugger 주기적 실행 차단)
-    const origSetInterval = win.setInterval;
-    win.setInterval = function(handler, timeout, ...args) {
-      if (typeof handler === 'string' && /debugger\s*;?/i.test(handler)) {
-        return 0;
-      }
-      if (typeof handler === 'function') {
-        try {
-          const fnStr = handler.toString();
-          if (/debugger\s*;?/i.test(fnStr) && fnStr.length < 150) {
-            return 0;
-          }
-        } catch (e) {}
-      }
-      return origSetInterval.call(this, handler, timeout, ...args);
-    };
-
-    const origSetTimeout = win.setTimeout;
-    win.setTimeout = function(handler, timeout, ...args) {
-      if (typeof handler === 'string' && /debugger\s*;?/i.test(handler)) {
-        return 0;
-      }
-      if (typeof handler === 'function') {
-        try {
-          const fnStr = handler.toString();
-          if (/debugger\s*;?/i.test(fnStr) && fnStr.length < 150) {
-            return 0;
-          }
-        } catch (e) {}
-      }
-      return origSetTimeout.call(this, handler, timeout, ...args);
-    };
-
-    // 4. console.clear 방어 (개발자 도구 콘솔 지우기 방지)
-    if (win.console && win.console.clear) {
-      win.console.clear = function() {
-        console.log("[Dynamic Ad Blocker] 악의적인 console.clear() 호출을 차단했습니다.");
-      };
-    }
-
-    console.log("[Dynamic Ad Blocker] 🛡️ 안티 디버거 방어 모듈이 활성화되었습니다.");
-  } catch (e) {
-    console.error("[Dynamic Ad Blocker] 안티 디버거 초기화 실패:", e);
-  }
-}
-
 function initRuntimeAdblockHooks() {
-  // 0. 안티 디버거 무력화 훅 우선 실행
-  initAntiDebugger();
 
   // 1. GM_webRequest를 이용한 네트워크 수준 사전 차단
   if (typeof GM_webRequest !== 'undefined') {
