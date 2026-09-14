@@ -1529,6 +1529,45 @@ async function fetchBookmarksFromGist() {
   return getBookmarkConfigs();
 }
 
+function resolveBookmarkUrl(rawPath, domainKey = "") {
+  if (!rawPath || typeof rawPath !== "string") {
+    return window.location.href;
+  }
+  const trimmed = rawPath.trim();
+  if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+    return window.location.origin + (trimmed.startsWith("/") ? trimmed : "/" + trimmed);
+  }
+
+  try {
+    const urlObj = new URL(trimmed);
+    const targetHost = urlObj.hostname.replace(/^www\./, "").toLowerCase();
+    const curHost = window.location.hostname.replace(/^www\./, "").toLowerCase();
+
+    // 1. 동일 호스트
+    if (targetHost === curHost) {
+      return window.location.origin + urlObj.pathname + urlObj.search + urlObj.hash;
+    }
+
+    // 2. domainKey가 와일드카드이고 둘 다 일치하는 경우
+    if (domainKey && domainKey.includes("*") && isMatch(domainKey, targetHost) && isMatch(domainKey, curHost)) {
+      return window.location.origin + urlObj.pathname + urlObj.search + urlObj.hash;
+    }
+
+    // 3. 넘버링 도메인 패턴이 서로 일치하는 경우 (예: hello033.com vs hello034.com)
+    if (hasNumericDomain(targetHost) && hasNumericDomain(curHost)) {
+      const targetPattern = getBookmarkDomainKey(targetHost);
+      const curPattern = getBookmarkDomainKey(curHost);
+      if (targetPattern && targetPattern === curPattern) {
+        return window.location.origin + urlObj.pathname + urlObj.search + urlObj.hash;
+      }
+    }
+
+    return trimmed;
+  } catch (e) {
+    return trimmed;
+  }
+}
+
 function getBookmarkDomainKey(hostname = window.location.hostname) {
   const clean = hostname.replace(/^www\./, "").toLowerCase();
   if (hasNumericDomain(clean)) {
@@ -1565,6 +1604,15 @@ async function addBookmark(title, memo = "", urlPath = "") {
   let finalPath = (urlPath || "").trim();
   if (!finalPath) {
     finalPath = window.location.pathname + window.location.search + window.location.hash;
+  } else if (finalPath.startsWith("http://") || finalPath.startsWith("https://")) {
+    try {
+      const u = new URL(finalPath);
+      const uHost = u.hostname.replace(/^www\./, "").toLowerCase();
+      const curHost = window.location.hostname.replace(/^www\./, "").toLowerCase();
+      if (uHost === curHost || (domainKey && domainKey.includes("*") && isMatch(domainKey, uHost)) || (hasNumericDomain(uHost) && hasNumericDomain(curHost) && getBookmarkDomainKey(uHost) === domainKey)) {
+        finalPath = u.pathname + u.search + u.hash;
+      }
+    } catch (e) {}
   }
 
   const newBm = {
@@ -1599,7 +1647,19 @@ async function updateBookmark(id, newTitle, newMemo = "", newUrlPath = null) {
       target.title = (newTitle || "").trim();
       target.memo = (newMemo || "").trim();
       if (newUrlPath !== null && typeof newUrlPath === "string" && newUrlPath.trim()) {
-        target.path = newUrlPath.trim();
+        let normPath = newUrlPath.trim();
+        if (normPath.startsWith("http://") || normPath.startsWith("https://")) {
+          try {
+            const u = new URL(normPath);
+            const uHost = u.hostname.replace(/^www\./, "").toLowerCase();
+            const curHost = window.location.hostname.replace(/^www\./, "").toLowerCase();
+            const curDomainKey = getBookmarkDomainKey();
+            if (uHost === curHost || (curDomainKey && curDomainKey.includes("*") && isMatch(curDomainKey, uHost)) || (hasNumericDomain(uHost) && hasNumericDomain(curHost) && getBookmarkDomainKey(uHost) === curDomainKey)) {
+              normPath = u.pathname + u.search + u.hash;
+            }
+          } catch (e) {}
+        }
+        target.path = normPath;
       }
       target.updatedAt = Date.now();
       found = true;
@@ -1922,10 +1982,20 @@ function initBookmarkWidget() {
 
     const currentUrl = window.location.href;
     const currentPath = window.location.pathname + window.location.search + window.location.hash;
-    const existingBm = siteBookmarks.find(b => b.path === currentPath || b.path === currentUrl);
+    const existingBm = siteBookmarks.find(b => {
+      if (b.path === currentPath || b.path === currentUrl) return true;
+      const resolved = resolveBookmarkUrl(b.path, b.domainKey);
+      if (resolved === currentUrl) return true;
+      try {
+        const rUrl = new URL(resolved);
+        if (rUrl.pathname + rUrl.search + rUrl.hash === currentPath) return true;
+      } catch (e) {}
+      return false;
+    });
     const isAlreadyBookmarked = !!existingBm;
 
-    const initialUrl = isAlreadyBookmarked ? existingBm.path : currentUrl;
+    const defaultPathOrUrl = hasNumericDomain(window.location.hostname) ? currentPath : currentUrl;
+    const initialUrl = isAlreadyBookmarked ? existingBm.path : defaultPathOrUrl;
     const initialTitle = isAlreadyBookmarked ? existingBm.title : (document.title || '');
     const initialMemo = isAlreadyBookmarked ? (existingBm.memo || '') : '';
     const actionBtnText = isAlreadyBookmarked ? '수정' : '저장';
@@ -1967,7 +2037,7 @@ function initBookmarkWidget() {
         ` : siteBookmarks.map(bm => `
           <li class="adblock-bookmark-item" data-bm-id="${bm.id}">
             <div class="adblock-bookmark-info-col" style="flex: 1; min-width: 0; cursor: pointer;">
-              <div class="adblock-bookmark-title-link" title="클릭 시 이동">${bm.title.replace(/</g, '&lt;')}</div>
+              <div class="adblock-bookmark-title-link" title="${resolveBookmarkUrl(bm.path, bm.domainKey)} (클릭 시 이동)">${bm.title.replace(/</g, '&lt;')}</div>
               ${bm.memo ? `<div class="adblock-bookmark-memo-text" style="font-size: 11px; color: #a1a1aa; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${bm.memo.replace(/"/g, '&quot;')}">${bm.memo.replace(/</g, '&lt;')}</div>` : ''}
             </div>
             <div class="adblock-bookmark-item-actions">
@@ -1996,9 +2066,9 @@ function initBookmarkWidget() {
     }
 
     popupCard.querySelector("#adblock-bm-add-cancel").onclick = () => {
-      newUrlInput.value = currentUrl;
-      newTitleInput.value = document.title || "";
-      newMemoInput.value = "";
+      newUrlInput.value = isAlreadyBookmarked ? existingBm.path : defaultPathOrUrl;
+      newTitleInput.value = isAlreadyBookmarked ? existingBm.title : (document.title || "");
+      newMemoInput.value = isAlreadyBookmarked ? (existingBm.memo || "") : "";
     };
 
     const handleSaveNew = async () => {
@@ -2025,9 +2095,9 @@ function initBookmarkWidget() {
     const handleKeydownNew = (e) => {
       if (e.key === "Enter") handleSaveNew();
       if (e.key === "Escape") {
-        newUrlInput.value = currentUrl;
-        newTitleInput.value = document.title || "";
-        newMemoInput.value = "";
+        newUrlInput.value = isAlreadyBookmarked ? existingBm.path : defaultPathOrUrl;
+        newTitleInput.value = isAlreadyBookmarked ? existingBm.title : (document.title || "");
+        newMemoInput.value = isAlreadyBookmarked ? (existingBm.memo || "") : "";
       }
     };
     newUrlInput.onkeydown = handleKeydownNew;
@@ -2041,10 +2111,7 @@ function initBookmarkWidget() {
 
       const infoCol = itemEl.querySelector(".adblock-bookmark-info-col");
       infoCol.onclick = () => {
-        const rawPath = targetBm.path || "";
-        const targetUrl = (rawPath.startsWith("http://") || rawPath.startsWith("https://"))
-          ? rawPath
-          : window.location.origin + (rawPath.startsWith("/") ? rawPath : "/" + rawPath);
+        const targetUrl = resolveBookmarkUrl(targetBm.path, targetBm.domainKey);
 
         if (GM_getValue("adblocker_bookmark_open_new_tab", false)) {
           if (typeof GM_openInTab !== "undefined") {
