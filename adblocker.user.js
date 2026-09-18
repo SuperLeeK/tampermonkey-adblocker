@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202609141125
+// @version      202609180815
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -366,17 +366,25 @@ function initEventListenerTracker() {
     targetProto.addEventListener = function(type, listener, options) {
       if (typeof listener === 'function') {
         try {
-          const fnName = listener.name || '(익명 함수)';
-          const fnCode = listener.toString();
-          window.__adblockCapturedEvents.push({
-            target: this,
-            type: type,
-            fnName: fnName,
-            fnCode: fnCode,
-            timestamp: Date.now()
-          });
-          if (window.__adblockCapturedEvents.length > 1500) {
-            window.__adblockCapturedEvents.shift();
+          const target = this;
+          const tag = target && target.tagName ? target.tagName.toLowerCase() : '';
+          const isExtensionOrUi = tag.startsWith('nord') || tag.startsWith('pass') ||
+            (target && target.id && (target.id.includes('nord') || target.id.startsWith('adblock-'))) ||
+            (target && typeof target.className === 'string' && (target.className.includes('nord') || target.className.includes('adblock-')));
+
+          if (!isExtensionOrUi) {
+            const fnName = listener.name || '(익명 함수)';
+            const fnCode = listener.toString();
+            window.__adblockCapturedEvents.push({
+              target: target,
+              type: type,
+              fnName: fnName,
+              fnCode: fnCode,
+              timestamp: Date.now()
+            });
+            if (window.__adblockCapturedEvents.length > 1500) {
+              window.__adblockCapturedEvents.shift();
+            }
           }
         } catch (e) {}
       }
@@ -4014,13 +4022,28 @@ function initRuntimeAdblockHooks() {
     return originalXHROpen.apply(this, arguments);
   };
 
+  function isSafeOrExtensionUrl(url) {
+    if (!url || typeof url !== 'string') return true;
+    const lower = url.trim().toLowerCase();
+    return (
+      lower.startsWith('chrome-extension://') ||
+      lower.startsWith('moz-extension://') ||
+      lower.startsWith('safari-extension://') ||
+      lower.startsWith('edge-extension://') ||
+      lower.startsWith('about:') ||
+      lower.startsWith('blob:') ||
+      lower.startsWith('data:') ||
+      lower.startsWith('javascript:')
+    );
+  }
+
   // Element.prototype.setAttribute 안전 차단
   if (typeof Element !== 'undefined' && Element.prototype && Element.prototype.setAttribute) {
     const origSetAttribute = Element.prototype.setAttribute;
     Element.prototype.setAttribute = function(name, value) {
       if (name && typeof name === 'string' && name.toLowerCase() === 'src') {
         const strVal = typeof value === 'string' ? value : String(value || '');
-        if (strVal && uniqueBlockDomains.some(domain => strVal.includes(domain))) {
+        if (strVal && !isSafeOrExtensionUrl(strVal) && uniqueBlockDomains.some(domain => strVal.includes(domain))) {
           console.log(`[Dynamic Ad Blocker] Blocked setAttribute(src): ${strVal}`);
           return;
         }
@@ -4046,12 +4069,12 @@ function initRuntimeAdblockHooks() {
       },
       set: function(val) {
         const strVal = typeof val === 'string' ? val : String(val || '');
-        if (strVal && uniqueBlockDomains.some(domain => strVal.includes(domain))) {
+        if (strVal && !isSafeOrExtensionUrl(strVal) && uniqueBlockDomains.some(domain => strVal.includes(domain))) {
           console.log(`[Dynamic Ad Blocker] Blocked prototype setter(src): ${strVal}`);
           return;
         }
         try {
-          return desc.set.call(this, val);
+          desc.set.call(this, val);
         } catch (e) {}
       },
       configurable: true,
@@ -4073,7 +4096,7 @@ function initRuntimeAdblockHooks() {
           const tag = node.tagName.toLowerCase();
           if (tag === 'script' || tag === 'iframe' || tag === 'img') {
             const src = node.src || node.getAttribute('src');
-            if (src && typeof src === 'string' && uniqueBlockDomains.some(domain => src.includes(domain))) {
+            if (src && typeof src === 'string' && !isSafeOrExtensionUrl(src) && uniqueBlockDomains.some(domain => src.includes(domain))) {
               console.log(`[Dynamic Ad Blocker] Blocked static node via Observer: <${tag} src="${src}">`);
               node.removeAttribute('src');
               node.remove();
@@ -4083,7 +4106,7 @@ function initRuntimeAdblockHooks() {
           const subResources = node.querySelectorAll('script, iframe, img');
           subResources.forEach(sub => {
             const src = sub.src || sub.getAttribute('src');
-            if (src && typeof src === 'string' && uniqueBlockDomains.some(domain => src.includes(domain))) {
+            if (src && typeof src === 'string' && !isSafeOrExtensionUrl(src) && uniqueBlockDomains.some(domain => src.includes(domain))) {
               console.log(`[Dynamic Ad Blocker] Blocked static subnode via Observer: <${sub.tagName} src="${src}">`);
               sub.removeAttribute('src');
               sub.remove();
@@ -6101,10 +6124,7 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
       initBookmarkWidget();
     }
 
-    if (uiGroup && targetParent) {
-      if (targetParent.lastElementChild !== uiGroup) {
-        targetParent.appendChild(uiGroup);
-      }
+    if (uiGroup) {
       uiGroup.style.zIndex = "2147483647";
       uiGroup.style.display = "flex";
       uiGroup.style.visibility = "visible";
@@ -6117,14 +6137,19 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
   if (!window.__adblock_observerBound) {
     window.__adblock_observerBound = true;
     try {
-      const observer = new MutationObserver(() => {
-        ensureFloatingButtonExists();
-      });
+      let debounceTimer = null;
+      const debouncedEnsure = () => {
+        if (debounceTimer) return;
+        debounceTimer = setTimeout(() => {
+          debounceTimer = null;
+          ensureFloatingButtonExists();
+        }, 500);
+      };
+      const observer = new MutationObserver(debouncedEnsure);
       if (document.documentElement) {
         observer.observe(document.documentElement, { childList: true });
       }
     } catch (e) {}
-    setInterval(ensureFloatingButtonExists, 2000);
   }
   window.__adblock_toggleFloatingButton = function() {
     let uiGroup = document.getElementById("adblock-ui-group");
@@ -6149,24 +6174,7 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
 
   setTimeout(ensureFloatingButtonExists, 3000);
   setTimeout(ensureFloatingButtonExists, 5000);
-  setTimeout(ensureFloatingButtonExists, 10000);
   setInterval(ensureFloatingButtonExists, 5000);
-
-  const initObserver = () => {
-    if (!document.body) return;
-    try {
-      const observer = new MutationObserver(() => {
-        ensureFloatingButtonExists();
-      });
-      observer.observe(document.body, { childList: true, subtree: false });
-    } catch (e) {}
-  };
-
-  if (document.body) {
-    initObserver();
-  } else {
-    document.addEventListener("DOMContentLoaded", initObserver);
-  }
 
   clipboardEventListener({ handleClick: handleManualClick });
 
