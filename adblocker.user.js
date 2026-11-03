@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202611040151
+// @version      202611040215
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -2616,7 +2616,7 @@ window.__adblock_toggleImageBlur = async function() {
   }
 };
 
-function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePickerHideClick, handleStyleInjectClick, handleShortcutClick, handleBlacklistClick, handleUrlBlockClick, handleDeleteListClick, handleHideReleaseClick, handleGistConfigClick, isBlacklisted = false }) {
+function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePickerHideClick, handleStyleInjectClick, handleSelectValueClick, handleShortcutClick, handleBlacklistClick, handleUrlBlockClick, handleDeleteListClick, handleHideReleaseClick, handleGistConfigClick, isBlacklisted = false }) {
   if (!document.getElementById('adblock-responsive-style')) {
     const responsiveStyle = document.createElement('style');
     responsiveStyle.id = 'adblock-responsive-style';
@@ -2861,6 +2861,19 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
     styleInjectBtn.element.style.borderColor = '#f38ba8';
   }
 
+  const selectValueBtn = new Button({
+    text: "값선택",
+    variant: "primary",
+    size: "small",
+    onClick: handleSelectValueClick || (() => Toast.show("블랙리스트에 등록된 사이트에서는 사용할 수 없습니다.")),
+  });
+  if (selectValueBtn && selectValueBtn.element) {
+    selectValueBtn.element.style.setProperty("background-color", "#0284c7", "important");
+    selectValueBtn.element.style.setProperty("color", "#ffffff", "important");
+    selectValueBtn.element.style.setProperty("font-weight", "600", "important");
+    selectValueBtn.element.style.setProperty("border-color", "#38bdf8", "important");
+  }
+
   const shortcutBtn = new Button({
     text: "⌨️ 단축키지정",
     variant: "warning",
@@ -2930,6 +2943,7 @@ function makeButtonGroups({ handleManualClick, handlePickerCoverClick, handlePic
   pickerHideBtn.appendTo(menuWrapper);
   urlBlockBtn.appendTo(menuWrapper);
   styleInjectBtn.appendTo(menuWrapper);
+  selectValueBtn.appendTo(menuWrapper);
   shortcutBtn.appendTo(menuWrapper);
   authConfigBtn.appendTo(menuWrapper);
   imageBlurBtn.appendTo(menuWrapper);
@@ -3433,7 +3447,7 @@ function startElementPicker(onSelect, options = {}) {
   const borderStyle = isPurple ? "3px dashed #cba6f7" : "3px dashed orange";
   const bgStyle = isPurple ? "rgba(203, 166, 247, 0.25)" : "rgba(255, 152, 0, 0.2)";
 
-  Toast.show(isPurple ? '단축키를 할당할 영역을 클릭하세요. (취소: ESC)' : '가릴 광고 영역을 클릭하세요. (취소: ESC)');
+  Toast.show(options.toast || (isPurple ? '단축키를 할당할 영역을 클릭하세요. (취소: ESC)' : '가릴 광고 영역을 클릭하세요. (취소: ESC)'));
 
   // 1. iframe 마우스 이벤트 무력화 스타일 주입
   const iframeDisableStyle = document.createElement("style");
@@ -3721,7 +3735,12 @@ function parseRuleItem(item) {
   if (typeof item === "string") {
     return { text: item, createdAt: null };
   }
-  let textVal = item.selector || item.pattern || item.value || "";
+  let textVal = "";
+  if (item.optionLabel && item.selector) {
+    textVal = `${item.selector} → ${item.optionLabel}`;
+  } else {
+    textVal = item.selector || item.pattern || item.value || "";
+  }
   if (!textVal && item.key && item.target) {
     textVal = `'${item.key}' 키 -> ${item.target}`;
   }
@@ -3750,7 +3769,7 @@ let lastAppliedBundles = null;
 
 function isAdblockUiNode(el) {
   if (!el || !el.closest) return false;
-  return !!el.closest("#adblock-ui-group, #adblock-toggle-dock, #adblock-bookmark-ui-group, #adblock-selector-modal, #adblock-auth-modal, .adblock-modal-overlay, #adblock-toggle-assign");
+  return !!el.closest("#adblock-ui-group, #adblock-toggle-dock, #adblock-bookmark-ui-group, #adblock-selector-modal, #adblock-auth-modal, .adblock-modal-overlay, #adblock-toggle-assign, #adblock-select-value-modal");
 }
 
 function getToggleHostKey() {
@@ -4622,6 +4641,141 @@ function applyAdblockRulesSync(coverSelectors = [], displayNoneSelectors = [], c
   startObserver();
 }
 
+function escapeAttrValue(value) {
+  const text = String(value == null ? "" : value);
+  if (window.CSS && typeof CSS.escape === "function") return CSS.escape(text);
+  return text.replace(/["\\]/g, "\\$&");
+}
+
+function buildSelectSelector(selectEl) {
+  if (!selectEl) return "";
+  const label = selectEl.getAttribute("aria-label");
+  if (label) return `select[aria-label="${escapeAttrValue(label)}"]`;
+  if (selectEl.name) return `select[name="${escapeAttrValue(selectEl.name)}"]`;
+  if (selectEl.id) return `select#${escapeAttrValue(selectEl.id)}`;
+  return getUniqueSelector(selectEl);
+}
+
+function forceSelectValue(select, value) {
+  if (!select || select.tagName !== "SELECT") return false;
+  const next = String(value);
+  if (select.value === next) return false;
+  const hasOption = Array.from(select.options || []).some((opt) => opt.value === next);
+  if (!hasOption) return false;
+
+  const tracker = select._valueTracker;
+  if (tracker && typeof tracker.setValue === "function") {
+    tracker.setValue(next === "" ? "adblock-prev" : "");
+  }
+
+  const prototype = Object.getPrototypeOf(select);
+  const prototypeSetter = Object.getOwnPropertyDescriptor(prototype, "value");
+  if (prototypeSetter && prototypeSetter.set) prototypeSetter.set.call(select, next);
+  else select.value = next;
+
+  select.dispatchEvent(new Event("input", { bubbles: true }));
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
+}
+
+let selectValueObserver = null;
+let activeSelectValueRules = [];
+
+function applySelectValueRules(list) {
+  activeSelectValueRules = Array.isArray(list) ? list.filter((rule) => rule && rule.selector && rule.value != null) : [];
+
+  const run = () => {
+    activeSelectValueRules.forEach((rule) => {
+      let nodes = [];
+      try { nodes = querySelectorAllExtended(rule.selector); } catch (e) { nodes = []; }
+      nodes.forEach((el) => {
+        if (isAdblockUiNode(el)) return;
+        forceSelectValue(el, rule.value);
+      });
+    });
+  };
+
+  run();
+  if (selectValueObserver) {
+    selectValueObserver.disconnect();
+    selectValueObserver = null;
+  }
+  if (activeSelectValueRules.length === 0) return;
+
+  selectValueObserver = new MutationObserver(() => run());
+  const start = () => {
+    const target = document.body || document.documentElement;
+    if (target) {
+      selectValueObserver.observe(target, { childList: true, subtree: true });
+    } else {
+      setTimeout(start, 50);
+    }
+  };
+  start();
+}
+
+function showSelectValueDialog(selectEl, onConfirm) {
+  const existing = document.getElementById("adblock-select-value-modal");
+  if (existing) existing.remove();
+
+  const selector = buildSelectSelector(selectEl);
+  const options = Array.from(selectEl.options || []);
+  if (!selector || options.length === 0) {
+    if (typeof Toast !== "undefined" && Toast.show) Toast.show("선택 가능한 옵션이 없습니다.");
+    return;
+  }
+
+  const overlay = document.createElement("div");
+  overlay.id = "adblock-select-value-modal";
+  overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;overflow:hidden;";
+
+  const card = document.createElement("div");
+  card.style.cssText = "width:100%;max-width:420px;max-height:min(80vh,560px);overflow-x:hidden;overflow-y:auto;background:#18181b;color:#f4f4f5;border:1px solid #3f3f46;border-radius:12px;padding:16px;font-family:system-ui,-apple-system,sans-serif;font-size:13px;box-shadow:0 20px 40px rgba(0,0,0,0.5);box-sizing:border-box;";
+
+  const title = document.createElement("div");
+  title.style.cssText = "font-weight:700;font-size:14px;margin-bottom:6px;";
+  title.textContent = "값선택";
+
+  const desc = document.createElement("div");
+  desc.style.cssText = "color:#a1a1aa;font-size:12px;line-height:1.45;margin-bottom:12px;word-break:break-all;";
+  desc.textContent = selector;
+
+  card.appendChild(title);
+  card.appendChild(desc);
+
+  options.forEach((opt) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    const current = opt.value === selectEl.value;
+    btn.textContent = `${opt.textContent.trim() || opt.value}${current ? " (현재)" : ""}`;
+    btn.style.cssText = "display:block;width:100%;max-width:100%;box-sizing:border-box;margin:0 0 6px;padding:8px 10px;border:1px solid #3f3f46;border-radius:6px;background:" + (current ? "#0284c7" : "#27272a") + ";color:#f4f4f5;text-align:left;cursor:pointer;font-weight:600;";
+    btn.onclick = () => {
+      overlay.remove();
+      if (typeof onConfirm === "function") {
+        onConfirm({
+          selector,
+          value: opt.value,
+          optionLabel: (opt.textContent || opt.value || "").trim()
+        });
+      }
+    };
+    card.appendChild(btn);
+  });
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.textContent = "닫기";
+  cancelBtn.style.cssText = "display:block;width:100%;max-width:100%;box-sizing:border-box;margin-top:6px;padding:8px 10px;border:none;border-radius:6px;background:#313244;color:#cdd6f4;cursor:pointer;";
+  cancelBtn.onclick = () => overlay.remove();
+  card.appendChild(cancelBtn);
+
+  overlay.appendChild(card);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+  (document.body || document.documentElement).appendChild(overlay);
+}
+
 function applyAdblockRules(coverSelectors = [], displayNoneSelectors = [], customStyleList = []) {
   applyAdblockRulesSync(coverSelectors, displayNoneSelectors, customStyleList);
 }
@@ -4674,6 +4828,7 @@ function initRuntimeAdblockHooks() {
     let combinedCover = [];
     let combinedHide = [];
     let combinedStyle = [];
+    let combinedSelectValues = [];
 
     rulesArray.forEach((v) => {
       const ruleHost = (v.host || "").replace(/^https?:\/\//, "").replace(/\/$/, "");
@@ -4681,12 +4836,16 @@ function initRuntimeAdblockHooks() {
         if (v.selectorList) combinedCover.push(...v.selectorList);
         if (v.displayNoneSelectorList) combinedHide.push(...v.displayNoneSelectorList);
         if (v.customStyleList) combinedStyle.push(...v.customStyleList);
+        if (v.selectValueList) combinedSelectValues.push(...v.selectValueList);
       }
     });
 
     if (combinedCover.length > 0 || combinedHide.length > 0 || combinedStyle.length > 0) {
       applyAdblockRulesSync(combinedCover, combinedHide, combinedStyle);
       console.log(`[Dynamic Ad Blocker] 극초기 캐시 적용 완료 (색상덮기: ${combinedCover.length}, 영역제거: ${combinedHide.length})`);
+    }
+    if (combinedSelectValues.length > 0) {
+      applySelectValueRules(combinedSelectValues);
     }
   }
 
@@ -5955,6 +6114,7 @@ function deduplicateShortcutList(list) {
     let combinedCover = [];
     let combinedHide = [];
     let combinedStyle = [];
+    let combinedSelectValues = [];
 
     for (const rule of activeRules) {
       const ruleHost = rule.host.replace(/^https?:\/\//, "").replace(/\/$/, "");
@@ -5964,6 +6124,7 @@ function deduplicateShortcutList(list) {
         if (rule.selectorList) combinedCover.push(...rule.selectorList);
         if (rule.displayNoneSelectorList) combinedHide.push(...rule.displayNoneSelectorList);
         if (rule.customStyleList) combinedStyle.push(...rule.customStyleList);
+        if (rule.selectValueList) combinedSelectValues.push(...rule.selectValueList);
       }
     }
 
@@ -5971,13 +6132,14 @@ function deduplicateShortcutList(list) {
 
     if (matched) {
       console.log(
-        `[AdBlocker Debug] 매칭 성공! 최종 적용 셀렉터 -> (덮기: ${combinedCover.length}, 제거: ${combinedHide.length}, 스타일: ${combinedStyle.length})`,
+        `[AdBlocker Debug] 매칭 성공! 최종 적용 셀렉터 -> (덮기: ${combinedCover.length}, 제거: ${combinedHide.length}, 스타일: ${combinedStyle.length}, 값선택: ${combinedSelectValues.length})`,
       );
       applyAdblockRules(combinedCover, combinedHide, combinedStyle);
     } else if (adblockStyleElement) {
       console.log(`[AdBlocker Debug] 매칭된 규칙 없음. 기존 주입 스타일 초기화.`);
       applyAdblockRules([], []);
     }
+    applySelectValueRules(combinedSelectValues);
   }
 
 
@@ -6083,6 +6245,62 @@ function deduplicateShortcutList(list) {
         Toast.show(`규칙이 추가되었습니다: ${selectorStr}`);
       }
     });
+  }
+
+  function handleSelectValueClick() {
+    startElementPicker((sel, el) => {
+      const selectEl = el && el.tagName === "SELECT" ? el : (el && el.closest ? el.closest("select") : null);
+      if (!selectEl) {
+        Toast.show("select 요소를 선택해주세요.");
+        return;
+      }
+      showSelectValueDialog(selectEl, (result) => {
+        const targetHost = window.location.origin;
+        const hostKey = window.location.host || window.location.hostname;
+        let currentPageRules = rulesArray.find((v) =>
+          isMatch(v.host.replace(/^https?:\/\//, "").replace(/\/$/, ""), hostKey),
+        );
+
+        if (!currentPageRules) {
+          currentPageRules = {
+            host: targetHost,
+            selectorList: [],
+            displayNoneSelectorList: [],
+            customStyleList: [],
+            blockedUrlPatterns: [],
+            selectValueList: [],
+          };
+          rulesArray.push(currentPageRules);
+        }
+
+        if (!currentPageRules.selectValueList) currentPageRules.selectValueList = [];
+        currentPageRules.selectValueList = currentPageRules.selectValueList.filter((item) => (item && item.selector) !== result.selector);
+        currentPageRules.selectValueList.push({
+          selector: result.selector,
+          value: result.value,
+          optionLabel: result.optionLabel,
+          createdAt: Date.now()
+        });
+
+        const gistConfig = getGistConfig();
+        if (!gistConfig.gistId || !gistConfig.token) {
+          Toast.show("Gist 설정 정보가 없습니다. 먼저 Gist ID와 Token을 설정해주세요.");
+          showGistConfigModal();
+          return;
+        }
+
+        const { set } = useGist(
+          gistConfig.gistId,
+          gistConfig.token,
+          gistConfig.fileName || "ad_selector_list.json"
+        );
+
+        set(rulesArray);
+        GM_setValue("cachedRules", rulesArray);
+        checkAndApply(rulesArray);
+        Toast.show(`값선택이 적용되었습니다: ${result.optionLabel}`);
+      });
+    }, { toast: "값을 바꿀 select를 클릭하세요. (취소: ESC)" });
   }
 
   async function handleManualClick() {
@@ -6301,7 +6519,7 @@ function handleShortcutPickerClick() {
   startElementPicker((sel, el) => handleShortcutAdd(sel, el), { theme: 'purple' });
 }
 
-function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles = [], urlPatterns = [], shortcuts = [], onConfirm }) {
+function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles = [], urlPatterns = [], shortcuts = [], selectValues = [], onConfirm }) {
   if (!document.getElementById('adblock-modal-style')) {
     const style = document.createElement('style');
     style.id = 'adblock-modal-style';
@@ -6576,6 +6794,7 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
   createSection('광고 선택자 (색상 덮기)', coverSelectors, 'cover');
   createSection('광고 선택자 (영역 제거 - display:none)', hideSelectors, 'hide');
   createSection('커스텀 주입 스타일 (Custom Style)', customStyles, 'custom');
+  createSection('값 선택 (Select)', selectValues, 'selectValue');
   createSection('차단 광고 링크 (URL Pattern)', urlPatterns, 'url');
   createSection('단축키 규칙 (Shortcuts)', shortcuts, 'shortcut');
 
@@ -6762,10 +6981,11 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
     const coverSelectors = deduplicateRuleList(currentPageRules.selectorList || []);
     const hideSelectors = deduplicateRuleList(currentPageRules.displayNoneSelectorList || []);
     const customStyles = deduplicateRuleList(currentPageRules.customStyleList || []);
+    const selectValues = deduplicateRuleList(currentPageRules.selectValueList || []);
     const urlPatterns = deduplicateRuleList(currentPageRules.blockedUrlPatterns || []);
     const shortcuts = deduplicateShortcutList(currentPageRules.shortcuts || []);
 
-    if (coverSelectors.length === 0 && hideSelectors.length === 0 && customStyles.length === 0 && urlPatterns.length === 0 && shortcuts.length === 0) {
+    if (coverSelectors.length === 0 && hideSelectors.length === 0 && customStyles.length === 0 && selectValues.length === 0 && urlPatterns.length === 0 && shortcuts.length === 0) {
       Toast.show('이 사이트에 등록된 설정 항목이 없습니다.');
       return;
     }
@@ -6776,12 +6996,14 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
       customStyles,
       urlPatterns,
       shortcuts,
+      selectValues,
       onConfirm: async (selectedItems) => {
         const coverToDelete = [];
         const hideToDelete = [];
         const customToDelete = [];
         const urlsToDelete = [];
         const shortcutsToDelete = [];
+        const selectValuesToDelete = [];
 
         const removedToggleRules = [];
         selectedItems.forEach(item => {
@@ -6790,6 +7012,7 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
           else if (item.type === 'custom') customToDelete.push(item.index);
           else if (item.type === 'url') urlsToDelete.push(item.index);
           else if (item.type === 'shortcut') shortcutsToDelete.push(item.index);
+          else if (item.type === 'selectValue') selectValuesToDelete.push(item.index);
 
           const list = item.type === 'cover' ? coverSelectors : item.type === 'hide' ? hideSelectors : item.type === 'custom' ? customStyles : null;
           if (!list) return;
@@ -6803,6 +7026,7 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
         customToDelete.sort((a, b) => b - a);
         urlsToDelete.sort((a, b) => b - a);
         shortcutsToDelete.sort((a, b) => b - a);
+        selectValuesToDelete.sort((a, b) => b - a);
 
         coverToDelete.forEach(idx => {
           currentPageRules.selectorList.splice(idx, 1);
@@ -6825,6 +7049,12 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
         shortcutsToDelete.forEach(idx => {
           if (currentPageRules.shortcuts) {
             currentPageRules.shortcuts.splice(idx, 1);
+          }
+        });
+
+        selectValuesToDelete.forEach(idx => {
+          if (currentPageRules.selectValueList) {
+            currentPageRules.selectValueList.splice(idx, 1);
           }
         });
 
@@ -6872,6 +7102,7 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
       handlePickerCoverClick,
       handlePickerHideClick,
       handleStyleInjectClick,
+      handleSelectValueClick,
       handleShortcutClick: handleShortcutPickerClick,
       handleBlacklistClick: isBlacklisted ? handleBlacklistReleaseClick : handleBlacklistClick,
       handleUrlBlockClick,
