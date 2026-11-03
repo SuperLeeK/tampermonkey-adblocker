@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202611040130
+// @version      202611040151
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -3879,34 +3879,51 @@ function clearInlineProps(el, props) {
 }
 
 function revertDisabledInlineStyles(bundles, disabled) {
-  if (!bundles || !disabled) return;
+  if (!disabled) return;
 
-  const revertList = (list, type, props) => {
-    if (!Array.isArray(list) || !disabled[type] || disabled[type].size === 0) return;
-    list.forEach((item) => {
-      const key = ruleSelectorKey(item);
-      if (!key || !disabled[type].has(key)) return;
-      let nodes = [];
-      try { nodes = querySelectorAllExtended(key); } catch (e) { nodes = []; }
-      nodes.forEach((el) => {
+  const release = (type, props, attr) => {
+    const set = disabled[type];
+    if (!set || set.size === 0) return;
+
+    const clearEl = (el, styleText) => {
+      if (!el || isAdblockUiNode(el)) return;
+      if (type === "custom") {
         const state = styledByUs.get(el);
-        if (!state || isAdblockUiNode(el)) return;
-        if (type === "custom") {
-          const owned = stylePropsFromText(typeof item === "object" ? item.style : "")
-            .filter((prop) => state.custom.has(prop.toLowerCase()));
-          clearInlineProps(el, owned);
-          owned.forEach((prop) => state.custom.delete(prop.toLowerCase()));
-        } else if (state[type]) {
-          clearInlineProps(el, props);
-          state[type] = false;
-        }
+        if (!state) return;
+        const owned = stylePropsFromText(styleText).filter((prop) => state.custom.has(prop.toLowerCase()));
+        clearInlineProps(el, owned);
+        owned.forEach((prop) => state.custom.delete(prop.toLowerCase()));
+      } else {
+        clearInlineProps(el, props);
+        const state = styledByUs.get(el);
+        if (state) state[type] = false;
+      }
+      el.removeAttribute(attr);
+    };
+
+    const list = bundles
+      ? (type === "hide" ? bundles.hide : type === "cover" ? bundles.cover : bundles.style)
+      : [];
+    if (Array.isArray(list)) {
+      list.forEach((item) => {
+        const key = ruleSelectorKey(item);
+        if (!key || !set.has(key)) return;
+        let nodes = [];
+        try { nodes = querySelectorAllExtended(key); } catch (e) { nodes = []; }
+        const styleText = typeof item === "object" ? item.style : "";
+        nodes.forEach((el) => clearEl(el, styleText));
       });
+    }
+
+    if (typeof document === "undefined" || !document.querySelectorAll) return;
+    document.querySelectorAll("[" + attr + "]").forEach((el) => {
+      if (set.has(el.getAttribute(attr))) clearEl(el, "");
     });
   };
 
-  revertList(bundles.hide, "hide", HIDE_INLINE_PROPS);
-  revertList(bundles.cover, "cover", COVER_INLINE_PROPS);
-  revertList(bundles.style, "custom");
+  release("hide", HIDE_INLINE_PROPS, "data-adblock-hide");
+  release("cover", COVER_INLINE_PROPS, "data-adblock-cover");
+  release("custom", [], "data-adblock-style");
 }
 
 function reapplyAdblockRules() {
@@ -4113,21 +4130,17 @@ function ensureToggleDockStyle() {
       height: 20px !important;
       flex-shrink: 0 !important;
       margin: 0 !important;
-    }
-    #adblock-toggle-dock .adblock-toggle-switch input {
-      opacity: 0 !important;
-      width: 0 !important;
-      height: 0 !important;
-      position: absolute !important;
-      margin: 0 !important;
+      padding: 0 !important;
+      border: none !important;
+      background: transparent !important;
+      cursor: pointer !important;
     }
     #adblock-toggle-dock .adblock-toggle-slider {
       position: absolute !important;
       inset: 0 !important;
       background: #3f3f46 !important;
       border-radius: 999px !important;
-      cursor: pointer !important;
-      transition: background 0.15s ease !important;
+      pointer-events: none !important;
     }
     #adblock-toggle-dock .adblock-toggle-slider::before {
       content: "" !important;
@@ -4138,12 +4151,12 @@ function ensureToggleDockStyle() {
       top: 2px !important;
       background: #ffffff !important;
       border-radius: 50% !important;
-      transition: transform 0.15s ease !important;
+      transform: none !important;
     }
-    #adblock-toggle-dock .adblock-toggle-switch input:checked + .adblock-toggle-slider {
+    #adblock-toggle-dock .adblock-toggle-switch[aria-checked="true"] .adblock-toggle-slider {
       background: #22c55e !important;
     }
-    #adblock-toggle-dock .adblock-toggle-switch input:checked + .adblock-toggle-slider::before {
+    #adblock-toggle-dock .adblock-toggle-switch[aria-checked="true"] .adblock-toggle-slider::before {
       transform: translateX(16px) !important;
     }
     #adblock-toggle-dock .adblock-toggle-remove {
@@ -4183,10 +4196,9 @@ function fillToggleDockList(dock) {
       <div class="adblock-toggle-row${off ? " is-off" : ""}">
         <button type="button" class="adblock-toggle-name" data-rename-toggle="${escapeToggleHtml(group.id)}" title="${escapeToggleHtml(title || group.name)}">${escapeToggleHtml(group.name || "스위치")}</button>
         <span class="adblock-toggle-count">${rules.length}</span>
-        <label class="adblock-toggle-switch" title="${off ? "꺼짐: 이 규칙만 해제" : "켜짐: 이 규칙 적용 중"}">
-          <input type="checkbox" data-toggle-id="${escapeToggleHtml(group.id)}" ${off ? "" : "checked"} />
+        <button type="button" class="adblock-toggle-switch" data-toggle-id="${escapeToggleHtml(group.id)}" aria-checked="${off ? "false" : "true"}" title="${off ? "꺼짐: 제거/덮기 해제" : "켜짐: 제거/덮기 적용"}">
           <span class="adblock-toggle-slider"></span>
-        </label>
+        </button>
         <button type="button" class="adblock-toggle-remove" data-remove-toggle="${escapeToggleHtml(group.id)}" title="이 스위치 삭제">&times;</button>
       </div>
     `;
@@ -4227,12 +4239,15 @@ function beginToggleRename(groupId, nameEl) {
 }
 
 function bindToggleDockEvents(dock) {
-  dock.addEventListener("change", (e) => {
-    const input = e.target.closest("[data-toggle-id]");
-    if (!input) return;
-    setToggleGroupEnabled(input.getAttribute("data-toggle-id"), input.checked);
-  });
   dock.addEventListener("click", (e) => {
+    const toggleBtn = e.target.closest(".adblock-toggle-switch");
+    if (toggleBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const nextEnabled = toggleBtn.getAttribute("aria-checked") !== "true";
+      setToggleGroupEnabled(toggleBtn.getAttribute("data-toggle-id"), nextEnabled);
+      return;
+    }
     const removeBtn = e.target.closest("[data-remove-toggle]");
     if (removeBtn) {
       e.preventDefault();
@@ -4306,12 +4321,38 @@ function showToggleAssignDialog(rules, options = {}) {
   });
   if (unique.length === 0) return;
 
+  if (!document.getElementById("adblock-toggle-assign-style")) {
+    const assignStyle = document.createElement("style");
+    assignStyle.id = "adblock-toggle-assign-style";
+    assignStyle.textContent = `
+      #adblock-toggle-assign,
+      #adblock-toggle-assign * {
+        box-sizing: border-box !important;
+      }
+      #adblock-toggle-assign .adblock-toggle-assign-card {
+        overflow-x: hidden !important;
+        overflow-y: auto !important;
+      }
+      #adblock-toggle-assign input,
+      #adblock-toggle-assign button {
+        display: block !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+        margin-left: 0 !important;
+        margin-right: 0 !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(assignStyle);
+  }
+
   const overlay = document.createElement("div");
   overlay.id = "adblock-toggle-assign";
-  overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;";
+  overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;overflow:hidden;";
 
   const card = document.createElement("div");
-  card.style.cssText = "width:100%;max-width:420px;max-height:min(80vh,560px);overflow:auto;background:#18181b;color:#f4f4f5;border:1px solid #3f3f46;border-radius:12px;padding:16px;font-family:system-ui,-apple-system,sans-serif;font-size:13px;box-shadow:0 20px 40px rgba(0,0,0,0.5);box-sizing:border-box;";
+  card.className = "adblock-toggle-assign-card";
+  card.style.cssText = "width:100%;max-width:420px;max-height:min(80vh,560px);overflow-x:hidden;overflow-y:auto;background:#18181b;color:#f4f4f5;border:1px solid #3f3f46;border-radius:12px;padding:16px;font-family:system-ui,-apple-system,sans-serif;font-size:13px;box-shadow:0 20px 40px rgba(0,0,0,0.5);box-sizing:border-box;";
 
   const title = document.createElement("div");
   title.style.cssText = "font-weight:700;font-size:14px;margin-bottom:6px;";
@@ -4324,7 +4365,8 @@ function showToggleAssignDialog(rules, options = {}) {
   const nameInput = document.createElement("input");
   nameInput.type = "text";
   nameInput.value = `스위치 ${getHostToggleGroups().length + 1}`;
-  nameInput.style.cssText = "width:100%;box-sizing:border-box;padding:8px 10px;margin-bottom:8px;background:#09090b;color:#f4f4f5;border:1px solid #3f3f46;border-radius:6px;font-size:13px;outline:none;";
+  const controlBox = "display:block;width:100%;max-width:100%;min-width:0;box-sizing:border-box;margin-left:0;margin-right:0;";
+  nameInput.style.cssText = controlBox + "padding:8px 10px;margin-bottom:8px;background:#09090b;color:#f4f4f5;border:1px solid #3f3f46;border-radius:6px;font-size:13px;outline:none;";
 
   const finish = (message) => {
     overlay.remove();
@@ -4339,7 +4381,7 @@ function showToggleAssignDialog(rules, options = {}) {
   const createBtn = document.createElement("button");
   createBtn.type = "button";
   createBtn.textContent = "이 묶음으로 스위치 1개 만들기";
-  createBtn.style.cssText = "width:100%;margin-bottom:6px;padding:8px 10px;border:none;border-radius:6px;background:#89b4fa;color:#11111b;font-weight:700;cursor:pointer;";
+  createBtn.style.cssText = controlBox + "margin-bottom:6px;padding:8px 10px;border:none;border-radius:6px;background:#89b4fa;color:#11111b;font-weight:700;cursor:pointer;";
   createBtn.onclick = () => {
     const name = nameInput.value.trim() || `스위치 ${getHostToggleGroups().length + 1}`;
     createToggleGroups([{ name, rules: unique }]);
@@ -4355,7 +4397,7 @@ function showToggleAssignDialog(rules, options = {}) {
     const splitBtn = document.createElement("button");
     splitBtn.type = "button";
     splitBtn.textContent = `규칙마다 스위치 만들기 (${unique.length}개)`;
-    splitBtn.style.cssText = "width:100%;margin-bottom:10px;padding:8px 10px;border:1px solid #3f3f46;border-radius:6px;background:#27272a;color:#f4f4f5;font-weight:600;cursor:pointer;";
+    splitBtn.style.cssText = controlBox + "margin-bottom:10px;padding:8px 10px;border:1px solid #3f3f46;border-radius:6px;background:#27272a;color:#f4f4f5;font-weight:600;cursor:pointer;";
     splitBtn.onclick = () => {
       createToggleGroups(unique.map((rule) => ({
         name: `${toggleTypeLabel(rule.type)} · ${shortToggleLabel(rule.selector)}`,
@@ -4377,7 +4419,7 @@ function showToggleAssignDialog(rules, options = {}) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.textContent = `${group.name || "스위치"} (${(group.rules || []).length})`;
-      btn.style.cssText = "width:100%;margin-bottom:6px;padding:8px 10px;border:1px solid #313244;border-radius:6px;background:#1e1e2e;color:#f4f4f5;text-align:left;cursor:pointer;";
+      btn.style.cssText = controlBox + "margin-bottom:6px;padding:8px 10px;border:1px solid #313244;border-radius:6px;background:#1e1e2e;color:#f4f4f5;text-align:left;cursor:pointer;";
       btn.onclick = () => {
         const updated = addRulesToToggleGroup(group.id, unique);
         const name = updated ? updated.name : group.name;
@@ -4390,7 +4432,7 @@ function showToggleAssignDialog(rules, options = {}) {
   const cancelBtn = document.createElement("button");
   cancelBtn.type = "button";
   cancelBtn.textContent = "닫기";
-  cancelBtn.style.cssText = "width:100%;margin-top:6px;padding:8px 10px;border:none;border-radius:6px;background:#313244;color:#cdd6f4;cursor:pointer;";
+  cancelBtn.style.cssText = controlBox + "margin-top:6px;padding:8px 10px;border:none;border-radius:6px;background:#313244;color:#cdd6f4;cursor:pointer;";
   cancelBtn.onclick = () => overlay.remove();
 
   card.appendChild(cancelBtn);
@@ -4496,6 +4538,7 @@ function applyAdblockRulesSync(coverSelectors = [], displayNoneSelectors = [], c
           querySelectorAllExtended(sel).forEach((el) => {
             if (isAdblockUiNode(el)) return;
             markStyled(el, "hide");
+            el.setAttribute("data-adblock-hide", sel);
             el.style.setProperty("display", "none", "important");
             el.style.setProperty("visibility", "hidden", "important");
             el.style.setProperty("height", "0", "important");
@@ -4513,9 +4556,11 @@ function applyAdblockRulesSync(coverSelectors = [], displayNoneSelectors = [], c
         const col = (typeof item === 'object' && item.color) ? item.color : '#ffffff';
         if (!sel) return;
         try {
-          querySelectorAllExtended(normalizeWildcardSelector(sel.trim())).forEach((el) => {
+          const coverKey = normalizeWildcardSelector(sel.trim());
+          querySelectorAllExtended(coverKey).forEach((el) => {
             if (isAdblockUiNode(el)) return;
             markStyled(el, "cover");
+            el.setAttribute("data-adblock-cover", coverKey);
             el.style.setProperty("position", "relative", "important");
             el.style.setProperty("overflow", "hidden", "important");
             el.style.setProperty("background-color", col, "important");
@@ -4536,6 +4581,7 @@ function applyAdblockRulesSync(coverSelectors = [], displayNoneSelectors = [], c
               querySelectorAllExtended(normSel).forEach(el => {
                 if (isAdblockUiNode(el)) return;
                 markStyled(el, "custom", stylePropsFromText(style));
+                el.setAttribute("data-adblock-style", normSel);
                 el.style.cssText += `; ${style}`;
               });
             } catch (e) {}
