@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202611050850
+// @version      202611050915
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -4187,9 +4187,14 @@ function keepToggleDockOnScreen(dock) {
 }
 
 function ensureToggleDockStyle() {
-  if (document.getElementById("adblock-toggle-dock-style")) return;
-  const style = document.createElement("style");
-  style.id = "adblock-toggle-dock-style";
+  let style = document.getElementById("adblock-toggle-dock-style");
+  if (!style) {
+    style = document.createElement("style");
+    style.id = "adblock-toggle-dock-style";
+    (document.head || document.documentElement).appendChild(style);
+  }
+  if (style.dataset.version === "202611050915") return;
+  style.dataset.version = "202611050915";
   style.textContent = `
     #adblock-toggle-dock {
       position: fixed !important;
@@ -4236,30 +4241,30 @@ function ensureToggleDockStyle() {
       padding: 8px !important;
     }
     #adblock-toggle-dock .adblock-toggle-grip {
-      width: 16px !important;
-      height: 22px !important;
-      flex-shrink: 0 !important;
+      width: 22px !important;
+      min-width: 22px !important;
+      height: 28px !important;
+      flex: 0 0 22px !important;
       margin: 0 !important;
       padding: 0 !important;
       border: none !important;
       background: transparent !important;
-      color: #6c7086 !important;
+      color: #cdd6f4 !important;
       cursor: grab !important;
       display: inline-flex !important;
       align-items: center !important;
       justify-content: center !important;
       touch-action: none !important;
+      user-select: none !important;
+      font-size: 16px !important;
+      line-height: 1 !important;
+      letter-spacing: -2px !important;
+      font-family: system-ui, sans-serif !important;
     }
     #adblock-toggle-dock .adblock-toggle-grip:hover,
     #adblock-toggle-dock .adblock-toggle-grip:active {
       color: #89b4fa !important;
       cursor: grabbing !important;
-    }
-    #adblock-toggle-dock .adblock-toggle-grip svg {
-      width: 10px !important;
-      height: 16px !important;
-      display: block !important;
-      pointer-events: none !important;
     }
     #adblock-toggle-dock .adblock-toggle-row.is-dragging {
       opacity: 0.4 !important;
@@ -4397,16 +4402,7 @@ function fillToggleDockList(dock) {
     const title = rules.map((rule) => `${toggleTypeLabel(rule.type)} ${rule.selector}`).join("\n");
     return `
       <div class="adblock-toggle-row${off ? " is-off" : ""}" data-row-id="${escapeToggleHtml(group.id)}">
-        <button type="button" class="adblock-toggle-grip" data-grip-toggle="${escapeToggleHtml(group.id)}" title="드래그하여 순서 변경" aria-label="순서 변경">
-          <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor" aria-hidden="true">
-            <circle cx="2" cy="2.2" r="1.15"></circle>
-            <circle cx="8" cy="2.2" r="1.15"></circle>
-            <circle cx="2" cy="8" r="1.15"></circle>
-            <circle cx="8" cy="8" r="1.15"></circle>
-            <circle cx="2" cy="13.8" r="1.15"></circle>
-            <circle cx="8" cy="13.8" r="1.15"></circle>
-          </svg>
-        </button>
+        <span class="adblock-toggle-grip" data-grip-toggle="${escapeToggleHtml(group.id)}" title="드래그하여 순서 변경" aria-label="순서 변경">⋮⋮</span>
         <button type="button" class="adblock-toggle-name" data-rename-toggle="${escapeToggleHtml(group.id)}" title="${escapeToggleHtml(title || group.name)}">${escapeToggleHtml(group.name || "스위치")}</button>
         <span class="adblock-toggle-count">${rules.length}</span>
         <button type="button" class="adblock-toggle-switch" data-toggle-id="${escapeToggleHtml(group.id)}" aria-checked="${off ? "false" : "true"}" title="${off ? "꺼짐: 제거/덮기 해제" : "켜짐: 제거/덮기 적용"}">
@@ -4416,6 +4412,32 @@ function fillToggleDockList(dock) {
       </div>
     `;
   }).join("");
+  list.querySelectorAll(".adblock-toggle-grip").forEach((grip) => {
+    const gripStyle = {
+      display: "inline-flex",
+      width: "22px",
+      "min-width": "22px",
+      height: "28px",
+      flex: "0 0 22px",
+      margin: "0",
+      padding: "0",
+      border: "none",
+      background: "transparent",
+      color: "#cdd6f4",
+      cursor: "grab",
+      "align-items": "center",
+      "justify-content": "center",
+      "touch-action": "none",
+      "user-select": "none",
+      "font-size": "16px",
+      "line-height": "1",
+      "letter-spacing": "-2px",
+      "font-family": "system-ui, sans-serif"
+    };
+    Object.entries(gripStyle).forEach(([key, value]) => {
+      grip.style.setProperty(key, value, "important");
+    });
+  });
   keepToggleDockOnScreen(dock);
 }
 
