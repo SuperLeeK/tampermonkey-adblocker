@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202611040215
+// @version      202611050850
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -621,7 +621,8 @@ function getGistConfig() {
     fileName: "ad_selector_list.json",
     blackListFileName: "ad_selector_blacklist.json",
     authFileName: "ad_selector_auth.json",
-    bookmarkFileName: "ad_selector_bookmarks.json"
+    bookmarkFileName: "ad_selector_bookmarks.json",
+    toggleFileName: "ad_selector_toggles.json"
   };
 
   const saved = GM_getValue("gist_config", null);
@@ -1298,6 +1299,8 @@ function makeElementDraggable(element, handle, baseStorageKey, options = {}) {
   const defaultSide = options.defaultSide || options.side || 'left';
   const margin = typeof options.margin === 'number' ? options.margin : 10;
   const defaultBottom = typeof options.defaultBottom === 'number' ? options.defaultBottom : 20;
+  const fitElement = !!options.fitElement;
+  const edge = fitElement ? margin : 10;
 
   // 기존 키(baseStorageKey)에서 초기 1회 마이그레이션 지원
   let savedPos = GM_getValue(storageKey, null);
@@ -1339,27 +1342,41 @@ function makeElementDraggable(element, handle, baseStorageKey, options = {}) {
 
   const setBottomPosition = (bottomPx, shouldSave = false) => {
     const winH = window.innerHeight;
-    const fabSize = (window.innerWidth <= 768) ? 36 : 42;
-    const maxBottom = Math.max(10, winH - fabSize - 10);
-    const clampedBottom = Math.min(maxBottom, Math.max(10, bottomPx));
+    let maxBottom;
+    if (fitElement) {
+      const elH = element.getBoundingClientRect().height || 0;
+      maxBottom = Math.max(edge, winH - elH - edge);
+    } else {
+      const fabSize = (window.innerWidth <= 768) ? 36 : 42;
+      maxBottom = Math.max(10, winH - fabSize - 10);
+    }
+    const clampedBottom = Math.min(maxBottom, Math.max(edge, bottomPx));
 
     element.style.setProperty("bottom", `${clampedBottom}px`, "important");
     element.style.setProperty("top", "auto", "important");
 
     if (shouldSave) {
-      GM_setValue(storageKey, { bottom: bottomPx, side: currentSide });
+      GM_setValue(storageKey, { bottom: fitElement ? clampedBottom : bottomPx, side: currentSide });
     }
+  };
+
+  element.__adblockSnap = {
+    applyHorizontal,
+    setBottomPosition,
+    getSide: () => currentSide
   };
 
   applyHorizontal(currentSide);
   setBottomPosition(initialBottom, false);
+  if (typeof options.onSideChange === "function") options.onSideChange(currentSide);
 
   window.addEventListener("resize", () => {
+    if (element.dataset.adblockMaximized === "1") return;
     applyHorizontal(currentSide);
     const pos = GM_getValue(storageKey, null);
     const bot = (pos && typeof pos.bottom === 'number') ? pos.bottom : initialBottom;
     setBottomPosition(bot, false);
-    resolveFabCollision();
+    if (!options.skipCollision) resolveFabCollision();
   });
 
   // 터치 제스처 스크롤 방지 및 커서 스타일
@@ -1375,6 +1392,11 @@ function makeElementDraggable(element, handle, baseStorageKey, options = {}) {
 
   const onPointerDown = (e) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (options.ignoreSelector && e.target && e.target.closest && e.target.closest(options.ignoreSelector)) return;
+    if (element.dataset.adblockMaximized === "1") {
+      if (typeof options.onExitMaximize === "function") options.onExitMaximize();
+      else return;
+    }
 
     const rect = element.getBoundingClientRect();
     const winH = window.innerHeight;
@@ -1411,8 +1433,8 @@ function makeElementDraggable(element, handle, baseStorageKey, options = {}) {
         let curLeft = initialLeft + dx;
         let curBottom = dragStartBottom - dy; // 아래로 드래그 시 dy > 0 -> bottom 감소, 위로 드래그 시 dy < 0 -> bottom 증가
 
-        curLeft = Math.max(10, Math.min(winW - elW - 10, curLeft));
-        curBottom = Math.max(10, Math.min(curWinH - elH - 10, curBottom));
+        curLeft = Math.max(edge, Math.min(winW - elW - edge, curLeft));
+        curBottom = Math.max(edge, Math.min(curWinH - elH - edge, curBottom));
 
         element.style.setProperty("left", `${curLeft}px`, "important");
         element.style.setProperty("bottom", `${curBottom}px`, "important");
@@ -1441,12 +1463,12 @@ function makeElementDraggable(element, handle, baseStorageKey, options = {}) {
         // 화면 절반(50%) 기준 좌/우 스냅 결정
         const newSide = (centerX < winW / 2) ? 'left' : 'right';
         applyHorizontal(newSide);
+        if (typeof options.onSideChange === "function") options.onSideChange(newSide);
 
-        const finalBottom = Math.max(10, Math.min(curWinH - curRect.height - 10, curWinH - curRect.bottom));
+        const finalBottom = Math.max(edge, Math.min(curWinH - curRect.height - edge, curWinH - curRect.bottom));
         setBottomPosition(finalBottom, true);
 
-        // 충돌 검사 및 북마크 버튼 상단 배치
-        resolveFabCollision();
+        if (!options.skipCollision) resolveFabCollision();
 
         // 클릭 이벤트 오발동 방지
         const captureClick = (clickEvent) => {
@@ -1465,8 +1487,9 @@ function makeElementDraggable(element, handle, baseStorageKey, options = {}) {
 
   handle.addEventListener("pointerdown", onPointerDown);
 
-  // 초기 충돌 조정 (두 버튼이 모두 렌더링된 후)
-  setTimeout(resolveFabCollision, 200);
+  if (!options.skipCollision) {
+    setTimeout(resolveFabCollision, 200);
+  }
 }
 
 function getBookmarkConfigs() {
@@ -2308,6 +2331,10 @@ function showGistConfigModal(onSaved) {
         <label style="display: block; color: #a1a1aa; font-size: 12px; margin-bottom: 4px; font-weight: 500;">북마크 파일명:</label>
         <input type="text" id="adblock-gist-bookmark-file-input" placeholder="ad_selector_bookmarks.json" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none;" value="${currentConfig.bookmarkFileName || 'ad_selector_bookmarks.json'}" />
       </div>
+      <div>
+        <label style="display: block; color: #a1a1aa; font-size: 12px; margin-bottom: 4px; font-weight: 500;">토글 스위치 파일명:</label>
+        <input type="text" id="adblock-gist-toggle-file-input" placeholder="ad_selector_toggles.json" style="width: 100%; box-sizing: border-box; padding: 8px 10px; background: #09090b; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 6px; font-family: monospace; font-size: 12px; outline: none;" value="${currentConfig.toggleFileName || 'ad_selector_toggles.json'}" />
+      </div>
       <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
         <button id="adblock-gist-open-url" style="padding: 6px 12px; background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 500;">🔗 Gist 바로가기</button>
         <div style="display: flex; gap: 8px;">
@@ -2341,6 +2368,7 @@ function showGistConfigModal(onSaved) {
     const blackListFileName = modalContainer.querySelector("#adblock-gist-blacklist-file-input").value.trim() || "ad_selector_blacklist.json";
     const authFileName = modalContainer.querySelector("#adblock-gist-auth-file-input").value.trim() || "ad_selector_auth.json";
     const bookmarkFileName = modalContainer.querySelector("#adblock-gist-bookmark-file-input").value.trim() || "ad_selector_bookmarks.json";
+    const toggleFileName = modalContainer.querySelector("#adblock-gist-toggle-file-input").value.trim() || "ad_selector_toggles.json";
 
     if (!gistId || !token) {
       alert("Gist ID와 GitHub Token은 필수 입력 항목입니다.");
@@ -2353,7 +2381,8 @@ function showGistConfigModal(onSaved) {
       fileName,
       blackListFileName,
       authFileName,
-      bookmarkFileName
+      bookmarkFileName,
+      toggleFileName
     });
 
     close();
@@ -3791,7 +3820,76 @@ function setHostToggleGroups(groups) {
   const key = getToggleHostKey();
   if (!groups || groups.length === 0) delete all[key];
   else all[key] = groups;
+  toggleLocalRevision += 1;
   GM_setValue(TOGGLE_GROUPS_STORAGE_KEY, all);
+  syncToggleGroupsToGist(all);
+}
+
+function toggleStoreHasGroups(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+  return Object.keys(data).some((key) => Array.isArray(data[key]) && data[key].length > 0);
+}
+
+let toggleGistQueue = Promise.resolve();
+let toggleLocalRevision = 0;
+
+function syncToggleGroupsToGist(data) {
+  const snapshot = JSON.parse(JSON.stringify(data || {}));
+  toggleGistQueue = toggleGistQueue
+    .catch(() => {})
+    .then(() => writeToggleGroupsToGist(snapshot));
+  return toggleGistQueue;
+}
+
+async function writeToggleGroupsToGist(data) {
+  const gistConfig = getGistConfig();
+  if (!gistConfig || !gistConfig.gistId || !gistConfig.token || typeof useGist !== "function") {
+    return false;
+  }
+  try {
+    const { set } = useGist(
+      gistConfig.gistId,
+      gistConfig.token,
+      gistConfig.toggleFileName || "ad_selector_toggles.json"
+    );
+    await set(data);
+    return true;
+  } catch (err) {
+    console.error("[Toggle] Gist 동기화 실패:", err);
+    if (typeof Toast !== "undefined" && Toast.show) {
+      Toast.show("토글 스위치를 Gist에 저장하지 못했습니다.");
+    }
+    return false;
+  }
+}
+
+async function fetchToggleGroupsFromGist() {
+  const local = loadAllToggleGroups();
+  const gistConfig = getGistConfig();
+  if (!gistConfig || !gistConfig.gistId || !gistConfig.token || typeof useGist !== "function") {
+    return local;
+  }
+  const revisionAtStart = toggleLocalRevision;
+  try {
+    const { get } = useGist(
+      gistConfig.gistId,
+      gistConfig.token,
+      gistConfig.toggleFileName || "ad_selector_toggles.json"
+    );
+    const remote = await get();
+    if (toggleLocalRevision !== revisionAtStart) return loadAllToggleGroups();
+    if (remote && typeof remote === "object" && !Array.isArray(remote)) {
+      GM_setValue(TOGGLE_GROUPS_STORAGE_KEY, remote);
+      return remote;
+    }
+  } catch (err) {
+    const message = String((err && err.message) || err || "");
+    console.warn("[Toggle] Gist 불러오기 실패, 로컬 캐시 사용:", err);
+    if (toggleLocalRevision === revisionAtStart && message.includes("파일을 찾을 수 없습니다") && toggleStoreHasGroups(local)) {
+      syncToggleGroupsToGist(local);
+    }
+  }
+  return loadAllToggleGroups();
 }
 
 function ruleSelectorKey(item) {
@@ -4046,6 +4144,48 @@ function removeToggleGroup(groupId) {
   renderToggleDock();
 }
 
+function moveToggleGroup(groupId, toIndex) {
+  const groups = getHostToggleGroups();
+  const from = groups.findIndex((group) => group.id === groupId);
+  if (from < 0 || toIndex < 0 || toIndex > groups.length - 1 || from === toIndex) return;
+  const [item] = groups.splice(from, 1);
+  groups.splice(toIndex, 0, item);
+  setHostToggleGroups(groups);
+  renderToggleDock();
+}
+
+function keepToggleDockOnScreen(dock) {
+  if (!dock || !dock.isConnected) return;
+  const margin = 10;
+  const list = dock.querySelector(".adblock-toggle-dock-list");
+  if (list) list.style.removeProperty("max-height");
+
+  let rect = dock.getBoundingClientRect();
+  const winH = window.innerHeight || document.documentElement.clientHeight || 0;
+  if (!winH || !rect.height) return;
+
+  const available = Math.max(120, winH - margin * 2);
+  if (rect.height > available && list) {
+    const listRect = list.getBoundingClientRect();
+    const next = Math.max(72, Math.floor(listRect.height - (rect.height - available)));
+    list.style.setProperty("max-height", `${next}px`, "important");
+    rect = dock.getBoundingClientRect();
+  }
+
+  if (rect.top >= margin - 0.5) return;
+
+  const snap = dock.__adblockSnap;
+  const currentBottom = winH - rect.bottom;
+  if (snap) {
+    snap.setBottomPosition(currentBottom, true);
+    return;
+  }
+  const maxBottom = Math.max(margin, winH - rect.height - margin);
+  const clamped = Math.min(maxBottom, Math.max(margin, currentBottom));
+  dock.style.setProperty("bottom", `${clamped}px`, "important");
+  dock.style.setProperty("top", "auto", "important");
+}
+
 function ensureToggleDockStyle() {
   if (document.getElementById("adblock-toggle-dock-style")) return;
   const style = document.createElement("style");
@@ -4075,6 +4215,7 @@ function ensureToggleDockStyle() {
       width: 100% !important;
     }
     #adblock-toggle-dock .adblock-toggle-dock-handle {
+      flex-shrink: 0 !important;
       padding: 8px 10px !important;
       background: #11111b !important;
       color: #89b4fa !important;
@@ -4086,12 +4227,55 @@ function ensureToggleDockStyle() {
       border-bottom: 1px solid #313244 !important;
     }
     #adblock-toggle-dock .adblock-toggle-dock-list {
+      position: relative !important;
       display: flex !important;
       flex-direction: column !important;
       gap: 6px !important;
-      max-height: min(50vh, 360px) !important;
+      max-height: min(50vh, 360px, calc(100vh - 80px)) !important;
       overflow-y: auto !important;
       padding: 8px !important;
+    }
+    #adblock-toggle-dock .adblock-toggle-grip {
+      width: 16px !important;
+      height: 22px !important;
+      flex-shrink: 0 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      border: none !important;
+      background: transparent !important;
+      color: #6c7086 !important;
+      cursor: grab !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      touch-action: none !important;
+    }
+    #adblock-toggle-dock .adblock-toggle-grip:hover,
+    #adblock-toggle-dock .adblock-toggle-grip:active {
+      color: #89b4fa !important;
+      cursor: grabbing !important;
+    }
+    #adblock-toggle-dock .adblock-toggle-grip svg {
+      width: 10px !important;
+      height: 16px !important;
+      display: block !important;
+      pointer-events: none !important;
+    }
+    #adblock-toggle-dock .adblock-toggle-row.is-dragging {
+      opacity: 0.4 !important;
+    }
+    #adblock-toggle-dock .adblock-toggle-drop-line {
+      position: absolute !important;
+      left: 8px !important;
+      right: 8px !important;
+      height: 2px !important;
+      margin: 0 !important;
+      border: none !important;
+      border-radius: 1px !important;
+      background: #89b4fa !important;
+      pointer-events: none !important;
+      z-index: 3 !important;
+      display: none !important;
     }
     #adblock-toggle-dock .adblock-toggle-row {
       display: flex !important;
@@ -4212,7 +4396,17 @@ function fillToggleDockList(dock) {
     const rules = group.rules || [];
     const title = rules.map((rule) => `${toggleTypeLabel(rule.type)} ${rule.selector}`).join("\n");
     return `
-      <div class="adblock-toggle-row${off ? " is-off" : ""}">
+      <div class="adblock-toggle-row${off ? " is-off" : ""}" data-row-id="${escapeToggleHtml(group.id)}">
+        <button type="button" class="adblock-toggle-grip" data-grip-toggle="${escapeToggleHtml(group.id)}" title="드래그하여 순서 변경" aria-label="순서 변경">
+          <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor" aria-hidden="true">
+            <circle cx="2" cy="2.2" r="1.15"></circle>
+            <circle cx="8" cy="2.2" r="1.15"></circle>
+            <circle cx="2" cy="8" r="1.15"></circle>
+            <circle cx="8" cy="8" r="1.15"></circle>
+            <circle cx="2" cy="13.8" r="1.15"></circle>
+            <circle cx="8" cy="13.8" r="1.15"></circle>
+          </svg>
+        </button>
         <button type="button" class="adblock-toggle-name" data-rename-toggle="${escapeToggleHtml(group.id)}" title="${escapeToggleHtml(title || group.name)}">${escapeToggleHtml(group.name || "스위치")}</button>
         <span class="adblock-toggle-count">${rules.length}</span>
         <button type="button" class="adblock-toggle-switch" data-toggle-id="${escapeToggleHtml(group.id)}" aria-checked="${off ? "false" : "true"}" title="${off ? "꺼짐: 제거/덮기 해제" : "켜짐: 제거/덮기 적용"}">
@@ -4222,6 +4416,7 @@ function fillToggleDockList(dock) {
       </div>
     `;
   }).join("");
+  keepToggleDockOnScreen(dock);
 }
 
 function beginToggleRename(groupId, nameEl) {
@@ -4259,6 +4454,11 @@ function beginToggleRename(groupId, nameEl) {
 
 function bindToggleDockEvents(dock) {
   dock.addEventListener("click", (e) => {
+    if (e.target.closest(".adblock-toggle-grip")) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     const toggleBtn = e.target.closest(".adblock-toggle-switch");
     if (toggleBtn) {
       e.preventDefault();
@@ -4280,6 +4480,88 @@ function bindToggleDockEvents(dock) {
       e.stopPropagation();
       beginToggleRename(renameBtn.getAttribute("data-rename-toggle"), renameBtn);
     }
+  });
+
+  dock.addEventListener("pointerdown", (e) => {
+    const grip = e.target.closest(".adblock-toggle-grip");
+    if (!grip) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const list = dock.querySelector(".adblock-toggle-dock-list");
+    const draggingId = grip.getAttribute("data-grip-toggle");
+    const row = grip.closest(".adblock-toggle-row");
+    if (!list || !draggingId || !row) return;
+
+    row.classList.add("is-dragging");
+    try { grip.setPointerCapture(e.pointerId); } catch (err) {}
+
+    let line = list.querySelector(".adblock-toggle-drop-line");
+    if (!line) {
+      line = document.createElement("div");
+      line.className = "adblock-toggle-drop-line";
+      list.appendChild(line);
+    }
+    let dropIndex = 0;
+    let moved = false;
+    let lastY = e.clientY;
+
+    const locate = (clientY) => {
+      const listRect = list.getBoundingClientRect();
+      if (clientY < listRect.top + 28) list.scrollTop -= 14;
+      else if (clientY > listRect.bottom - 28) list.scrollTop += 14;
+
+      const others = Array.from(list.querySelectorAll(".adblock-toggle-row"))
+        .filter((item) => item.getAttribute("data-row-id") !== draggingId);
+      let index = others.length;
+      let lineTop = 8;
+      const freshRect = list.getBoundingClientRect();
+      for (let i = 0; i < others.length; i++) {
+        const rect = others[i].getBoundingClientRect();
+        if (clientY < rect.top + rect.height / 2) {
+          index = i;
+          lineTop = rect.top - freshRect.top + list.scrollTop - 4;
+          break;
+        }
+        lineTop = rect.bottom - freshRect.top + list.scrollTop + 2;
+      }
+      dropIndex = index;
+      line.style.setProperty("display", "block", "important");
+      line.style.setProperty("top", `${lineTop}px`, "important");
+    };
+
+    const onMove = (ev) => {
+      if (ev.pointerId !== e.pointerId) return;
+      lastY = ev.clientY;
+      if (Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY) > 3) moved = true;
+      locate(ev.clientY);
+    };
+    const onScroll = () => locate(lastY);
+    const finish = (ev) => {
+      if (ev && ev.pointerId !== e.pointerId) return;
+      grip.removeEventListener("pointermove", onMove);
+      grip.removeEventListener("pointerup", finish);
+      grip.removeEventListener("pointercancel", finish);
+      list.removeEventListener("scroll", onScroll);
+      row.classList.remove("is-dragging");
+      if (line) line.remove();
+      if (moved) {
+        moveToggleGroup(draggingId, dropIndex);
+        const swallow = (clickEvent) => {
+          clickEvent.preventDefault();
+          clickEvent.stopPropagation();
+          window.removeEventListener("click", swallow, true);
+        };
+        window.addEventListener("click", swallow, true);
+      }
+    };
+
+    locate(e.clientY);
+    grip.addEventListener("pointermove", onMove);
+    grip.addEventListener("pointerup", finish);
+    grip.addEventListener("pointercancel", finish);
+    list.addEventListener("scroll", onScroll);
   });
 }
 
@@ -4316,7 +4598,14 @@ function renderToggleDock() {
   bindToggleDockEvents(dock);
   fillToggleDockList(dock);
   const handle = dock.querySelector(".adblock-toggle-dock-handle");
-  makeElementDraggable(dock, handle, "adblock_toggle_dock_position", { defaultSide: "left", margin: 10, defaultBottom: 80 });
+  makeElementDraggable(dock, handle, "adblock_toggle_dock_position", {
+    defaultSide: "left",
+    margin: 10,
+    defaultBottom: 80,
+    fitElement: true,
+    skipCollision: true
+  });
+  keepToggleDockOnScreen(dock);
 }
 
 function ensureToggleDock() {
@@ -5159,7 +5448,7 @@ function showSelectorModal({ initialElement, initialSelector, type, authTitle, o
 
   modalContainer.innerHTML = `
     <div id="adblock-modal-resizer-left" style="position: absolute; left: 0; top: 0; width: 6px; height: 100%; cursor: ew-resize; z-index: 10;" title="드래그하여 너비 조절"></div>
-    <div style="padding: 12px 16px; background: rgba(255, 255, 255, 0.05); border-bottom: 1px solid rgba(255, 255, 255, 0.1); display: flex; justify-content: space-between; align-items: center; user-select: none;">
+    <div id="adblock-modal-drag-handle" style="padding: 12px 16px; background: rgba(255, 255, 255, 0.05); border-bottom: 1px solid rgba(255, 255, 255, 0.1); display: flex; justify-content: space-between; align-items: center; user-select: none; cursor: grab;" title="드래그하여 옮깁니다. 놓으면 화면 절반을 기준으로 왼쪽 또는 오른쪽에 붙습니다.">
       <span style="font-weight: 600; font-size: 13px; color: ${headerTitleColor};">[${actionName}] 선택자 지정</span>
       <div style="display: flex; align-items: center; gap: 6px;">
         <button id="adblock-modal-toggle-pos" style="background: none; border: none; color: #a1a1aa; font-size: 13px; cursor: pointer; padding: 2px 4px; line-height: 1;" title="상단/하단 위치 전환">⬆️</button>
@@ -5256,18 +5545,62 @@ function showSelectorModal({ initialElement, initialSelector, type, authTitle, o
   const closeBtn = modalContainer.querySelector("#adblock-modal-close");
 
   let isTopPos = false;
-  togglePosBtn.onclick = () => {
+  let isMaximized = false;
+  let resizeFromRight = false;
+
+  function restoreModalFrame() {
+    isMaximized = false;
+    delete modalContainer.dataset.adblockMaximized;
+    maxBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>';
+    modalContainer.style.setProperty("height", "auto", "important");
+    modalContainer.style.setProperty("display", "block", "important");
+    infoEl.style.height = "100px";
+    infoEl.style.maxHeight = "100px";
+    infoEl.style.flex = "none";
+    const snap = modalContainer.__adblockSnap;
+    const pos = GM_getValue(getPlatformStorageKey("adblock_selector_modal_position"), null);
+    const bottom = pos && typeof pos.bottom === "number" ? pos.bottom : 24;
+    if (snap) snap.setBottomPosition(bottom, false);
+  }
+
+  function placeModalResizer(side) {
+    resizeFromRight = side === "left";
+    if (resizeFromRight) {
+      resizerLeft.style.left = "auto";
+      resizerLeft.style.right = "0px";
+    } else {
+      resizerLeft.style.right = "auto";
+      resizerLeft.style.left = "0px";
+    }
+  }
+
+  togglePosBtn.onclick = (e) => {
+    e.stopPropagation();
+    if (modalContainer.dataset.adblockMaximized === "1") restoreModalFrame();
     isTopPos = !isTopPos;
+    const snap = modalContainer.__adblockSnap;
+    if (!snap) return;
     if (isTopPos) {
-      modalContainer.style.bottom = "auto";
-      modalContainer.style.top = "30px";
+      const height = modalContainer.getBoundingClientRect().height || modalContainer.offsetHeight;
+      snap.setBottomPosition(window.innerHeight - height - 10, true);
       togglePosBtn.innerText = "⬇️";
     } else {
-      modalContainer.style.top = "auto";
-      modalContainer.style.bottom = "24px";
+      snap.setBottomPosition(24, true);
       togglePosBtn.innerText = "⬆️";
     }
   };
+
+  const dragHandle = modalContainer.querySelector("#adblock-modal-drag-handle");
+  makeElementDraggable(modalContainer, dragHandle, "adblock_selector_modal_position", {
+    defaultSide: "right",
+    margin: 10,
+    defaultBottom: 24,
+    fitElement: true,
+    skipCollision: true,
+    ignoreSelector: "button, input, textarea, select, a, label",
+    onExitMaximize: restoreModalFrame,
+    onSideChange: placeModalResizer
+  });
   const styleInput = isStyleType ? modalContainer.querySelector("#adblock-modal-style-input") : null;
   const colorInput = isCoverType ? modalContainer.querySelector("#adblock-modal-cover-color") : null;
   const eyedropperBtn = isCoverType ? modalContainer.querySelector("#adblock-modal-eyedropper-btn") : null;
@@ -5598,29 +5931,22 @@ function showSelectorModal({ initialElement, initialSelector, type, authTitle, o
     }
   };
 
-  let isMaximized = false;
   maxBtn.onclick = () => {
     isMaximized = !isMaximized;
     if (isMaximized) {
+      modalContainer.dataset.adblockMaximized = "1";
       maxBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="9" width="12" height="12" rx="1.5"/><path d="M9 9V4.5A1.5 1.5 0 0 1 10.5 3H19.5A1.5 1.5 0 0 1 21 4.5V13.5A1.5 1.5 0 0 1 19.5 15H15"/></svg>';
-      modalContainer.style.top = '24px';
-      modalContainer.style.bottom = '24px';
-      modalContainer.style.height = 'calc(100vh - 48px)';
-      modalContainer.style.display = 'flex';
-      modalContainer.style.flexDirection = 'column';
+      modalContainer.style.setProperty("top", "24px", "important");
+      modalContainer.style.setProperty("bottom", "24px", "important");
+      modalContainer.style.setProperty("height", "calc(100vh - 48px)", "important");
+      modalContainer.style.setProperty("display", "flex", "important");
+      modalContainer.style.setProperty("flex-direction", "column", "important");
 
-      infoEl.style.height = 'auto';
-      infoEl.style.maxHeight = 'none';
-      infoEl.style.flex = '1';
+      infoEl.style.height = "auto";
+      infoEl.style.maxHeight = "none";
+      infoEl.style.flex = "1";
     } else {
-      maxBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>';
-      modalContainer.style.top = 'auto';
-      modalContainer.style.bottom = '24px';
-      modalContainer.style.height = 'auto';
-
-      infoEl.style.height = '100px';
-      infoEl.style.maxHeight = '100px';
-      infoEl.style.flex = 'none';
+      restoreModalFrame();
     }
   };
 
@@ -5630,6 +5956,7 @@ function showSelectorModal({ initialElement, initialSelector, type, authTitle, o
 
   resizerLeft.onmousedown = (e) => {
     e.preventDefault();
+    e.stopPropagation();
     isResizing = true;
     startX = e.clientX;
     startWidth = modalContainer.offsetWidth;
@@ -5640,7 +5967,7 @@ function showSelectorModal({ initialElement, initialSelector, type, authTitle, o
 
   function onMouseMoveResizer(e) {
     if (!isResizing) return;
-    const dx = startX - e.clientX;
+    const dx = resizeFromRight ? (e.clientX - startX) : (startX - e.clientX);
     const newWidth = Math.max(320, Math.min(window.innerWidth - 32, startWidth + dx));
     modalContainer.style.width = newWidth + "px";
   }
@@ -7111,6 +7438,10 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
       isBlacklisted
     });
     renderToggleDock();
+    fetchToggleGroupsFromGist().then(() => {
+      renderToggleDock();
+      if (lastAppliedBundles) reapplyAdblockRules();
+    });
   };
 
   setupFloatingButton();
