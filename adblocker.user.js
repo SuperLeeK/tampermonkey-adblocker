@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202611050915
+// @version      202611050930
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -4193,8 +4193,8 @@ function ensureToggleDockStyle() {
     style.id = "adblock-toggle-dock-style";
     (document.head || document.documentElement).appendChild(style);
   }
-  if (style.dataset.version === "202611050915") return;
-  style.dataset.version = "202611050915";
+  if (style.dataset.version === "202611050930") return;
+  style.dataset.version = "202611050930";
   style.textContent = `
     #adblock-toggle-dock {
       position: fixed !important;
@@ -4239,32 +4239,6 @@ function ensureToggleDockStyle() {
       max-height: min(50vh, 360px, calc(100vh - 80px)) !important;
       overflow-y: auto !important;
       padding: 8px !important;
-    }
-    #adblock-toggle-dock .adblock-toggle-grip {
-      width: 22px !important;
-      min-width: 22px !important;
-      height: 28px !important;
-      flex: 0 0 22px !important;
-      margin: 0 !important;
-      padding: 0 !important;
-      border: none !important;
-      background: transparent !important;
-      color: #cdd6f4 !important;
-      cursor: grab !important;
-      display: inline-flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      touch-action: none !important;
-      user-select: none !important;
-      font-size: 16px !important;
-      line-height: 1 !important;
-      letter-spacing: -2px !important;
-      font-family: system-ui, sans-serif !important;
-    }
-    #adblock-toggle-dock .adblock-toggle-grip:hover,
-    #adblock-toggle-dock .adblock-toggle-grip:active {
-      color: #89b4fa !important;
-      cursor: grabbing !important;
     }
     #adblock-toggle-dock .adblock-toggle-row.is-dragging {
       opacity: 0.4 !important;
@@ -4402,7 +4376,6 @@ function fillToggleDockList(dock) {
     const title = rules.map((rule) => `${toggleTypeLabel(rule.type)} ${rule.selector}`).join("\n");
     return `
       <div class="adblock-toggle-row${off ? " is-off" : ""}" data-row-id="${escapeToggleHtml(group.id)}">
-        <span class="adblock-toggle-grip" data-grip-toggle="${escapeToggleHtml(group.id)}" title="드래그하여 순서 변경" aria-label="순서 변경">⋮⋮</span>
         <button type="button" class="adblock-toggle-name" data-rename-toggle="${escapeToggleHtml(group.id)}" title="${escapeToggleHtml(title || group.name)}">${escapeToggleHtml(group.name || "스위치")}</button>
         <span class="adblock-toggle-count">${rules.length}</span>
         <button type="button" class="adblock-toggle-switch" data-toggle-id="${escapeToggleHtml(group.id)}" aria-checked="${off ? "false" : "true"}" title="${off ? "꺼짐: 제거/덮기 해제" : "켜짐: 제거/덮기 적용"}">
@@ -4412,32 +4385,6 @@ function fillToggleDockList(dock) {
       </div>
     `;
   }).join("");
-  list.querySelectorAll(".adblock-toggle-grip").forEach((grip) => {
-    const gripStyle = {
-      display: "inline-flex",
-      width: "22px",
-      "min-width": "22px",
-      height: "28px",
-      flex: "0 0 22px",
-      margin: "0",
-      padding: "0",
-      border: "none",
-      background: "transparent",
-      color: "#cdd6f4",
-      cursor: "grab",
-      "align-items": "center",
-      "justify-content": "center",
-      "touch-action": "none",
-      "user-select": "none",
-      "font-size": "16px",
-      "line-height": "1",
-      "letter-spacing": "-2px",
-      "font-family": "system-ui, sans-serif"
-    };
-    Object.entries(gripStyle).forEach(([key, value]) => {
-      grip.style.setProperty(key, value, "important");
-    });
-  });
   keepToggleDockOnScreen(dock);
 }
 
@@ -4476,7 +4423,8 @@ function beginToggleRename(groupId, nameEl) {
 
 function bindToggleDockEvents(dock) {
   dock.addEventListener("click", (e) => {
-    if (e.target.closest(".adblock-toggle-grip")) {
+    if (dock.dataset.suppressClick === "1") {
+      dock.dataset.suppressClick = "";
       e.preventDefault();
       e.stopPropagation();
       return;
@@ -4505,31 +4453,27 @@ function bindToggleDockEvents(dock) {
   });
 
   dock.addEventListener("pointerdown", (e) => {
-    const grip = e.target.closest(".adblock-toggle-grip");
-    if (!grip) return;
     if (e.pointerType === "mouse" && e.button !== 0) return;
-    e.preventDefault();
-    e.stopPropagation();
+    if (e.target.closest(".adblock-toggle-switch, .adblock-toggle-remove, .adblock-toggle-rename-input")) return;
+    const row = e.target.closest(".adblock-toggle-row");
+    if (!row || !dock.contains(row)) return;
 
     const list = dock.querySelector(".adblock-toggle-dock-list");
-    const draggingId = grip.getAttribute("data-grip-toggle");
-    const row = grip.closest(".adblock-toggle-row");
-    if (!list || !draggingId || !row) return;
+    const draggingId = row.getAttribute("data-row-id");
+    if (!list || !draggingId) return;
 
-    row.classList.add("is-dragging");
-    try { grip.setPointerCapture(e.pointerId); } catch (err) {}
-
-    let line = list.querySelector(".adblock-toggle-drop-line");
-    if (!line) {
-      line = document.createElement("div");
-      line.className = "adblock-toggle-drop-line";
-      list.appendChild(line);
-    }
-    let dropIndex = 0;
-    let moved = false;
+    const pointerId = e.pointerId;
+    const startX = e.clientX;
+    const startY = e.clientY;
     let lastY = e.clientY;
+    let armed = false;
+    let moved = false;
+    let dropIndex = 0;
+    let line = null;
+    let timer = 0;
 
     const locate = (clientY) => {
+      if (!line) return;
       const listRect = list.getBoundingClientRect();
       if (clientY < listRect.top + 28) list.scrollTop -= 14;
       else if (clientY > listRect.bottom - 28) list.scrollTop += 14;
@@ -4553,36 +4497,56 @@ function bindToggleDockEvents(dock) {
       line.style.setProperty("top", `${lineTop}px`, "important");
     };
 
-    const onMove = (ev) => {
-      if (ev.pointerId !== e.pointerId) return;
-      lastY = ev.clientY;
-      if (Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY) > 3) moved = true;
-      locate(ev.clientY);
+    const arm = () => {
+      if (armed) return;
+      armed = true;
+      dock.dataset.suppressClick = "1";
+      row.classList.add("is-dragging");
+      row.style.setProperty("cursor", "grabbing", "important");
+      try { row.setPointerCapture(pointerId); } catch (err) {}
+      line = document.createElement("div");
+      line.className = "adblock-toggle-drop-line";
+      list.appendChild(line);
+      locate(lastY);
     };
-    const onScroll = () => locate(lastY);
+
     const finish = (ev) => {
-      if (ev && ev.pointerId !== e.pointerId) return;
-      grip.removeEventListener("pointermove", onMove);
-      grip.removeEventListener("pointerup", finish);
-      grip.removeEventListener("pointercancel", finish);
+      if (ev && ev.pointerId !== pointerId) return;
+      clearTimeout(timer);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
       list.removeEventListener("scroll", onScroll);
       row.classList.remove("is-dragging");
+      row.style.removeProperty("cursor");
       if (line) line.remove();
-      if (moved) {
-        moveToggleGroup(draggingId, dropIndex);
-        const swallow = (clickEvent) => {
-          clickEvent.preventDefault();
-          clickEvent.stopPropagation();
-          window.removeEventListener("click", swallow, true);
-        };
-        window.addEventListener("click", swallow, true);
+      if (armed && moved) moveToggleGroup(draggingId, dropIndex);
+      if (armed) {
+        dock.dataset.suppressClick = "1";
+        setTimeout(() => { dock.dataset.suppressClick = ""; }, 0);
       }
     };
 
-    locate(e.clientY);
-    grip.addEventListener("pointermove", onMove);
-    grip.addEventListener("pointerup", finish);
-    grip.addEventListener("pointercancel", finish);
+    const onMove = (ev) => {
+      if (ev.pointerId !== pointerId) return;
+      lastY = ev.clientY;
+      const dist = Math.hypot(ev.clientX - startX, ev.clientY - startY);
+      if (!armed) {
+        if (dist > 8) finish(ev);
+        return;
+      }
+      if (dist > 3) moved = true;
+      ev.preventDefault();
+      locate(ev.clientY);
+    };
+    const onScroll = () => {
+      if (armed) locate(lastY);
+    };
+
+    timer = setTimeout(arm, 420);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
     list.addEventListener("scroll", onScroll);
   });
 }
