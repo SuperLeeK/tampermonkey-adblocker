@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202611050925
+// @version      202611051935
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -3822,7 +3822,7 @@ function setHostToggleGroups(groups) {
   else all[key] = groups;
   toggleLocalRevision += 1;
   GM_setValue(TOGGLE_GROUPS_STORAGE_KEY, all);
-  syncToggleGroupsToGist(all);
+  return syncToggleGroupsToGist(all);
 }
 
 function toggleStoreHasGroups(data) {
@@ -3890,6 +3890,43 @@ async function fetchToggleGroupsFromGist() {
     }
   }
   return loadAllToggleGroups();
+}
+
+function replaceStringsInRuleItem(item, from, to) {
+  if (!from) return { item, changed: false };
+  if (typeof item === "string") {
+    if (!item.includes(from)) return { item, changed: false };
+    return { item: item.split(from).join(to), changed: true };
+  }
+  if (!item || typeof item !== "object") return { item, changed: false };
+  let changed = false;
+  Object.keys(item).forEach((key) => {
+    if (key === "createdAt" || key === "color" || key === "isFunc" || key === "action" || key === "id") return;
+    const value = item[key];
+    if (typeof value === "string" && value.includes(from)) {
+      item[key] = value.split(from).join(to);
+      changed = true;
+    }
+  });
+  return { item, changed };
+}
+
+function renameToggleRuleSelectors(pairs) {
+  if (!pairs || pairs.length === 0) return Promise.resolve();
+  const groups = getHostToggleGroups();
+  let changed = false;
+  groups.forEach((group) => {
+    (group.rules || []).forEach((rule) => {
+      pairs.forEach((pair) => {
+        if (rule.type === pair.type && rule.selector === pair.before) {
+          rule.selector = pair.after;
+          changed = true;
+        }
+      });
+    });
+  });
+  if (!changed) return Promise.resolve();
+  return setHostToggleGroups(groups) || Promise.resolve();
 }
 
 function ruleSelectorKey(item) {
@@ -6851,7 +6888,7 @@ function handleShortcutPickerClick() {
   startElementPicker((sel, el) => handleShortcutAdd(sel, el), { theme: 'purple' });
 }
 
-function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles = [], urlPatterns = [], shortcuts = [], selectValues = [], onConfirm }) {
+function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles = [], urlPatterns = [], shortcuts = [], selectValues = [], onConfirm, onReplace }) {
   if (!document.getElementById('adblock-modal-style')) {
     const style = document.createElement('style');
     style.id = 'adblock-modal-style';
@@ -7012,6 +7049,78 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
       .adblock-modal-num-input:focus {
         border-color: #89b4fa;
       }
+      .adblock-modal-header-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .adblock-modal-replace-btn {
+        padding: 4px 10px;
+        font-size: 12px;
+      }
+      .adblock-replace-overlay {
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0, 0, 0, 0.45);
+        z-index: 2147483647;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        box-sizing: border-box;
+      }
+      .adblock-replace-card {
+        width: 100%;
+        max-width: 420px;
+        background: #181825;
+        color: #cdd6f4;
+        border: 1px solid #313244;
+        border-radius: 12px;
+        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+        padding: 16px;
+        box-sizing: border-box;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+      .adblock-replace-card h3 {
+        margin: 0 0 6px;
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .adblock-replace-scope {
+        margin: 0 0 12px;
+        color: #a6adc8;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .adblock-replace-card label {
+        display: block;
+        margin-bottom: 10px;
+        color: #a6adc8;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      .adblock-replace-card input {
+        display: block;
+        width: 100%;
+        margin-top: 4px;
+        padding: 8px 12px;
+        border-radius: 6px;
+        border: 1px solid #313244;
+        background: #11111b;
+        color: #cdd6f4;
+        font-size: 13px;
+        box-sizing: border-box;
+        outline: none;
+      }
+      .adblock-replace-card input:focus {
+        border-color: #89b4fa;
+      }
+      .adblock-replace-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 4px;
+      }
     `;
     (document.head || document.documentElement).appendChild(style);
   }
@@ -7024,10 +7133,27 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
 
   const header = document.createElement('div');
   header.className = 'adblock-modal-header';
-  header.innerHTML = `
-    <span>⚙️ 설정 제거 창</span>
-    <button class="adblock-modal-close-btn">&times;</button>
-  `;
+
+  const headerTitle = document.createElement('span');
+  headerTitle.textContent = '⚙️ 설정 제거 창';
+
+  const headerActions = document.createElement('div');
+  headerActions.className = 'adblock-modal-header-actions';
+
+  const replaceBtn = document.createElement('button');
+  replaceBtn.type = 'button';
+  replaceBtn.className = 'adblock-modal-btn adblock-modal-btn-accent adblock-modal-replace-btn';
+  replaceBtn.textContent = '바꾸기';
+
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'adblock-modal-close-btn';
+  closeBtn.textContent = '×';
+
+  headerActions.appendChild(replaceBtn);
+  headerActions.appendChild(closeBtn);
+  header.appendChild(headerTitle);
+  header.appendChild(headerActions);
 
   const body = document.createElement('div');
   body.className = 'adblock-modal-body';
@@ -7231,7 +7357,131 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
     overlay.remove();
   }
 
-  header.querySelector('.adblock-modal-close-btn').addEventListener('click', closeModal);
+  closeBtn.addEventListener('click', closeModal);
+
+  function getReplaceTargets() {
+    const checked = checkboxes.filter(cb => cb.checked);
+    if (checked.length === 0 || checked.length === checkboxes.length) return checkboxes.slice();
+    return checked;
+  }
+
+  function replaceScopeText(targets) {
+    if (checkboxes.length === 0) return '바꿀 항목이 없습니다.';
+    if (targets.length === checkboxes.length) {
+      const checked = checkboxes.filter(cb => cb.checked).length;
+      if (checked === 0) return `체크된 항목이 없어 전체 ${targets.length}개에서 바꿉니다.`;
+      return `전체가 선택되어 ${targets.length}개 모두에서 바꿉니다.`;
+    }
+    return `선택된 ${targets.length}개 항목에서만 바꿉니다.`;
+  }
+
+  replaceBtn.addEventListener('click', () => {
+    if (checkboxes.length === 0) {
+      Toast.show('바꿀 항목이 없습니다.');
+      return;
+    }
+    const existing = document.querySelector('.adblock-replace-overlay');
+    if (existing) existing.remove();
+
+    const targets = getReplaceTargets();
+    const overlayEl = document.createElement('div');
+    overlayEl.className = 'adblock-replace-overlay';
+
+    const card = document.createElement('div');
+    card.className = 'adblock-replace-card';
+
+    const title = document.createElement('h3');
+    title.textContent = '문자열 바꾸기';
+
+    const scope = document.createElement('p');
+    scope.className = 'adblock-replace-scope';
+    scope.textContent = replaceScopeText(targets);
+
+    const fromLabel = document.createElement('label');
+    fromLabel.textContent = '찾을 문자열';
+    const fromInput = document.createElement('input');
+    fromInput.type = 'text';
+    fromInput.placeholder = '예: dAjJOT';
+    fromInput.autocomplete = 'off';
+    fromLabel.appendChild(fromInput);
+
+    const toLabel = document.createElement('label');
+    toLabel.textContent = '바꿀 문자열';
+    const toInput = document.createElement('input');
+    toInput.type = 'text';
+    toInput.placeholder = '새 문자열';
+    toInput.autocomplete = 'off';
+    toLabel.appendChild(toInput);
+
+    const actions = document.createElement('div');
+    actions.className = 'adblock-replace-actions';
+
+    const dismissBtn = document.createElement('button');
+    dismissBtn.type = 'button';
+    dismissBtn.className = 'adblock-modal-btn adblock-modal-btn-secondary';
+    dismissBtn.textContent = '취소';
+
+    const applyBtn = document.createElement('button');
+    applyBtn.type = 'button';
+    applyBtn.className = 'adblock-modal-btn adblock-modal-btn-accent';
+    applyBtn.textContent = '바꾸기';
+
+    actions.appendChild(dismissBtn);
+    actions.appendChild(applyBtn);
+    card.appendChild(title);
+    card.appendChild(scope);
+    card.appendChild(fromLabel);
+    card.appendChild(toLabel);
+    card.appendChild(actions);
+    overlayEl.appendChild(card);
+
+    function closeReplace() {
+      overlayEl.remove();
+    }
+
+    dismissBtn.addEventListener('click', closeReplace);
+    overlayEl.addEventListener('click', (e) => {
+      if (e.target === overlayEl) closeReplace();
+    });
+    fromInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        toInput.focus();
+      }
+    });
+    toInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        applyBtn.click();
+      }
+    });
+
+    applyBtn.addEventListener('click', () => {
+      const from = fromInput.value.trim();
+      const to = toInput.value.trim();
+      if (!from) {
+        Toast.show('찾을 문자열을 입력해주세요.');
+        fromInput.focus();
+        return;
+      }
+      if (from === to) {
+        Toast.show('찾을 문자열과 바꿀 문자열이 같습니다.');
+        return;
+      }
+
+      const selectedTargets = getReplaceTargets().map(cb => ({
+        type: cb.dataset.type,
+        index: parseInt(cb.dataset.index, 10)
+      }));
+      const changed = onReplace({ targets: selectedTargets, from, to });
+      if (!changed) return;
+      closeReplace();
+      closeModal();
+    });
+
+    document.body.appendChild(overlayEl);
+    fromInput.focus();
+  });
   cancelBtn.addEventListener('click', closeModal);
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) closeModal();
@@ -7329,6 +7579,74 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
       urlPatterns,
       shortcuts,
       selectValues,
+      onReplace: ({ targets, from, to }) => {
+        const lists = {
+          cover: coverSelectors,
+          hide: hideSelectors,
+          custom: customStyles,
+          selectValue: selectValues,
+          url: urlPatterns,
+          shortcut: shortcuts
+        };
+        const togglePairs = [];
+        let changedCount = 0;
+
+        targets.forEach((target) => {
+          const list = lists[target.type];
+          if (!list || list[target.index] == null) return;
+          const beforeKey = ruleSelectorKey(list[target.index]);
+          const result = replaceStringsInRuleItem(list[target.index], from, to);
+          if (typeof list[target.index] === "string") list[target.index] = result.item;
+          if (!result.changed) return;
+          changedCount++;
+          const afterKey = ruleSelectorKey(list[target.index]);
+          if (beforeKey && afterKey && beforeKey !== afterKey && (target.type === "cover" || target.type === "hide" || target.type === "custom")) {
+            togglePairs.push({ type: target.type, before: beforeKey, after: afterKey });
+          }
+        });
+
+        if (changedCount === 0) {
+          Toast.show("바꿀 문자열을 찾지 못했습니다.");
+          return false;
+        }
+
+        currentPageRules.selectorList = deduplicateRuleList(coverSelectors);
+        currentPageRules.displayNoneSelectorList = deduplicateRuleList(hideSelectors);
+        currentPageRules.customStyleList = deduplicateRuleList(customStyles);
+        currentPageRules.selectValueList = deduplicateRuleList(selectValues);
+        currentPageRules.blockedUrlPatterns = deduplicateRuleList(urlPatterns);
+        currentPageRules.shortcuts = deduplicateShortcutList(shortcuts);
+
+        const toggleSave = renameToggleRuleSelectors(togglePairs);
+        Toast.show(`${changedCount}개 항목에서 문자열을 바꿨습니다. 적용을 위해 새로고침합니다.`);
+
+        GM_setValue("cachedRules", rulesArray);
+        checkAndApply(rulesArray);
+        initSiteShortcuts(rulesArray);
+
+        const gistConfig = getGistConfig();
+        if (!gistConfig.gistId || !gistConfig.token) {
+          Toast.show("Gist 설정 정보가 없습니다. 먼저 Gist ID와 Token을 설정해주세요.");
+          showGistConfigModal();
+          return true;
+        }
+
+        const { set } = useGist(
+          gistConfig.gistId,
+          gistConfig.token,
+          gistConfig.fileName || "ad_selector_list.json"
+        );
+
+        Promise.all([
+          Promise.resolve(toggleSave),
+          set(rulesArray)
+        ]).finally(() => {
+          setTimeout(() => {
+            window.location.reload();
+          }, 1200);
+        });
+        return true;
+      },
       onConfirm: async (selectedItems) => {
         const coverToDelete = [];
         const hideToDelete = [];
