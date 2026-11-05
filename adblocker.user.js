@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202611050913
+// @version      202611050925
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -4126,6 +4126,22 @@ function setToggleGroupEnabled(groupId, enabled) {
   if (dock) fillToggleDockList(dock);
 }
 
+function setAllToggleGroupsEnabled(enabled) {
+  const groups = getHostToggleGroups();
+  let changed = false;
+  groups.forEach((group) => {
+    const isOn = group.enabled !== false;
+    if (isOn === enabled) return;
+    group.enabled = enabled;
+    changed = true;
+  });
+  if (!changed) return;
+  setHostToggleGroups(groups);
+  reapplyAdblockRules();
+  const dock = document.getElementById("adblock-toggle-dock");
+  if (dock) fillToggleDockList(dock);
+}
+
 function renameToggleGroup(groupId, name) {
   const nextName = String(name || "").trim();
   const groups = getHostToggleGroups();
@@ -4200,8 +4216,8 @@ function ensureToggleDockStyle() {
     style.id = "adblock-toggle-dock-style";
     (document.head || document.documentElement).appendChild(style);
   }
-  if (style.dataset.version === "202611050910") return;
-  style.dataset.version = "202611050910";
+  if (style.dataset.version === "202611050920") return;
+  style.dataset.version = "202611050920";
   style.textContent = `
     #adblock-toggle-dock {
       position: fixed !important;
@@ -4221,22 +4237,31 @@ function ensureToggleDockStyle() {
       pointer-events: auto !important;
     }
     #adblock-toggle-dock * { box-sizing: border-box !important; }
-    #adblock-toggle-dock .adblock-toggle-dock-handle,
+    #adblock-toggle-dock .adblock-toggle-dock-header,
     #adblock-toggle-dock .adblock-toggle-dock-list,
     #adblock-toggle-dock .adblock-toggle-row {
       width: 100% !important;
     }
-    #adblock-toggle-dock .adblock-toggle-dock-handle {
+    #adblock-toggle-dock .adblock-toggle-dock-header {
+      display: flex !important;
+      align-items: center !important;
       flex-shrink: 0 !important;
-      padding: 8px 10px !important;
+      gap: 8px !important;
+      padding: 6px 8px 6px 10px !important;
       background: #11111b !important;
+      border-bottom: 1px solid #313244 !important;
+    }
+    #adblock-toggle-dock .adblock-toggle-dock-handle {
+      flex: 1 !important;
+      min-width: 0 !important;
+      padding: 2px 0 !important;
+      background: transparent !important;
       color: #89b4fa !important;
       font-weight: 700 !important;
       font-size: 12px !important;
       cursor: grab !important;
       user-select: none !important;
       touch-action: none !important;
-      border-bottom: 1px solid #313244 !important;
     }
     #adblock-toggle-dock .adblock-toggle-dock-list {
       position: relative !important;
@@ -4376,7 +4401,41 @@ function ensureToggleDockStyle() {
   (document.head || document.documentElement).appendChild(style);
 }
 
+function syncMasterToggle(dock) {
+  const btn = dock.querySelector("[data-toggle-all]");
+  if (!btn) return;
+  const groups = getHostToggleGroups();
+  const allOn = groups.length > 0 && groups.every((group) => group.enabled !== false);
+  btn.setAttribute("aria-checked", allOn ? "true" : "false");
+  btn.title = allOn ? "전체 끄기" : "전체 켜기";
+}
+
+function ensureToggleDockHeader(dock) {
+  if (dock.querySelector(".adblock-toggle-dock-header")) return;
+  const header = document.createElement("div");
+  header.className = "adblock-toggle-dock-header";
+  const handle = dock.querySelector(".adblock-toggle-dock-handle");
+  if (handle) {
+    handle.parentNode.insertBefore(header, handle);
+    header.appendChild(handle);
+  } else {
+    dock.insertBefore(header, dock.firstChild);
+    const title = document.createElement("div");
+    title.className = "adblock-toggle-dock-handle";
+    title.title = "드래그해서 옮깁니다. 이름은 눌러 수정합니다.";
+    title.textContent = "토글 스위치";
+    header.appendChild(title);
+  }
+  const allBtn = document.createElement("button");
+  allBtn.type = "button";
+  allBtn.className = "adblock-toggle-switch adblock-toggle-all";
+  allBtn.setAttribute("data-toggle-all", "");
+  allBtn.innerHTML = '<span class="adblock-toggle-slider"></span>';
+  header.appendChild(allBtn);
+}
+
 function fillToggleDockList(dock) {
+  ensureToggleDockHeader(dock);
   const list = dock.querySelector(".adblock-toggle-dock-list");
   if (!list) return;
   const groups = getHostToggleGroups();
@@ -4384,6 +4443,7 @@ function fillToggleDockList(dock) {
     dock.remove();
     return;
   }
+  syncMasterToggle(dock);
   list.innerHTML = groups.map((group, index) => {
     const off = group.enabled === false;
     const rules = group.rules || [];
@@ -4465,6 +4525,13 @@ function beginToggleRename(groupId, nameEl) {
 
 function bindToggleDockEvents(dock) {
   dock.addEventListener("click", (e) => {
+    const allBtn = e.target.closest("[data-toggle-all]");
+    if (allBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      setAllToggleGroupsEnabled(allBtn.getAttribute("aria-checked") !== "true");
+      return;
+    }
     const orderBtn = e.target.closest("[data-move-toggle]");
     if (orderBtn) {
       e.preventDefault();
@@ -4524,7 +4591,12 @@ function renderToggleDock() {
   const dock = document.createElement("div");
   dock.id = "adblock-toggle-dock";
   dock.innerHTML = `
-    <div class="adblock-toggle-dock-handle" title="드래그해서 옮깁니다. 이름은 눌러 수정합니다.">토글 스위치</div>
+    <div class="adblock-toggle-dock-header">
+      <div class="adblock-toggle-dock-handle" title="드래그해서 옮깁니다. 이름은 눌러 수정합니다.">토글 스위치</div>
+      <button type="button" class="adblock-toggle-switch adblock-toggle-all" data-toggle-all aria-checked="true" title="전체 끄기">
+        <span class="adblock-toggle-slider"></span>
+      </button>
+    </div>
     <div class="adblock-toggle-dock-list"></div>
   `;
   document.body.appendChild(dock);
