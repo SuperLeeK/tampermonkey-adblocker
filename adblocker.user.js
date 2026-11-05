@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202611050930
+// @version      202611050910
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -4154,6 +4154,13 @@ function moveToggleGroup(groupId, toIndex) {
   renderToggleDock();
 }
 
+function shiftToggleGroup(groupId, delta) {
+  const groups = getHostToggleGroups();
+  const from = groups.findIndex((group) => group.id === groupId);
+  if (from < 0) return;
+  moveToggleGroup(groupId, from + delta);
+}
+
 function keepToggleDockOnScreen(dock) {
   if (!dock || !dock.isConnected) return;
   const margin = 10;
@@ -4193,8 +4200,8 @@ function ensureToggleDockStyle() {
     style.id = "adblock-toggle-dock-style";
     (document.head || document.documentElement).appendChild(style);
   }
-  if (style.dataset.version === "202611050930") return;
-  style.dataset.version = "202611050930";
+  if (style.dataset.version === "202611050910") return;
+  style.dataset.version = "202611050910";
   style.textContent = `
     #adblock-toggle-dock {
       position: fixed !important;
@@ -4239,22 +4246,6 @@ function ensureToggleDockStyle() {
       max-height: min(50vh, 360px, calc(100vh - 80px)) !important;
       overflow-y: auto !important;
       padding: 8px !important;
-    }
-    #adblock-toggle-dock .adblock-toggle-row.is-dragging {
-      opacity: 0.4 !important;
-    }
-    #adblock-toggle-dock .adblock-toggle-drop-line {
-      position: absolute !important;
-      left: 8px !important;
-      right: 8px !important;
-      height: 2px !important;
-      margin: 0 !important;
-      border: none !important;
-      border-radius: 1px !important;
-      background: #89b4fa !important;
-      pointer-events: none !important;
-      z-index: 3 !important;
-      display: none !important;
     }
     #adblock-toggle-dock .adblock-toggle-row {
       display: flex !important;
@@ -4304,6 +4295,29 @@ function ensureToggleDockStyle() {
       color: #a6adc8 !important;
       font-size: 11px !important;
       font-variant-numeric: tabular-nums !important;
+    }
+    #adblock-toggle-dock .adblock-toggle-order {
+      display: inline-flex !important;
+      width: 22px !important;
+      min-width: 22px !important;
+      height: 22px !important;
+      flex: 0 0 22px !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      border: 1px solid #3f3f46 !important;
+      border-radius: 4px !important;
+      background: #27272a !important;
+      color: #f4f4f5 !important;
+      cursor: pointer !important;
+      align-items: center !important;
+      justify-content: center !important;
+      font-size: 12px !important;
+      line-height: 1 !important;
+      font-family: system-ui, sans-serif !important;
+    }
+    #adblock-toggle-dock .adblock-toggle-order:disabled {
+      opacity: 0.35 !important;
+      cursor: default !important;
     }
     #adblock-toggle-dock .adblock-toggle-switch {
       position: relative !important;
@@ -4370,21 +4384,49 @@ function fillToggleDockList(dock) {
     dock.remove();
     return;
   }
-  list.innerHTML = groups.map((group) => {
+  list.innerHTML = groups.map((group, index) => {
     const off = group.enabled === false;
     const rules = group.rules || [];
     const title = rules.map((rule) => `${toggleTypeLabel(rule.type)} ${rule.selector}`).join("\n");
+    const id = escapeToggleHtml(group.id);
     return `
-      <div class="adblock-toggle-row${off ? " is-off" : ""}" data-row-id="${escapeToggleHtml(group.id)}">
-        <button type="button" class="adblock-toggle-name" data-rename-toggle="${escapeToggleHtml(group.id)}" title="${escapeToggleHtml(title || group.name)}">${escapeToggleHtml(group.name || "스위치")}</button>
+      <div class="adblock-toggle-row${off ? " is-off" : ""}" data-row-id="${id}">
+        <button type="button" class="adblock-toggle-name" data-rename-toggle="${id}" title="${escapeToggleHtml(title || group.name)}">${escapeToggleHtml(group.name || "스위치")}</button>
         <span class="adblock-toggle-count">${rules.length}</span>
-        <button type="button" class="adblock-toggle-switch" data-toggle-id="${escapeToggleHtml(group.id)}" aria-checked="${off ? "false" : "true"}" title="${off ? "꺼짐: 제거/덮기 해제" : "켜짐: 제거/덮기 적용"}">
+        <button type="button" class="adblock-toggle-order" data-move-toggle="${id}" data-move-dir="-1" title="위로" ${index === 0 ? "disabled" : ""}>▲</button>
+        <button type="button" class="adblock-toggle-order" data-move-toggle="${id}" data-move-dir="1" title="아래로" ${index === groups.length - 1 ? "disabled" : ""}>▼</button>
+        <button type="button" class="adblock-toggle-switch" data-toggle-id="${id}" aria-checked="${off ? "false" : "true"}" title="${off ? "꺼짐: 제거/덮기 해제" : "켜짐: 제거/덮기 적용"}">
           <span class="adblock-toggle-slider"></span>
         </button>
-        <button type="button" class="adblock-toggle-remove" data-remove-toggle="${escapeToggleHtml(group.id)}" title="이 스위치 삭제">&times;</button>
+        <button type="button" class="adblock-toggle-remove" data-remove-toggle="${id}" title="이 스위치 삭제">&times;</button>
       </div>
     `;
   }).join("");
+  list.querySelectorAll(".adblock-toggle-order").forEach((btn) => {
+    const orderStyle = {
+      display: "inline-flex",
+      width: "22px",
+      "min-width": "22px",
+      height: "22px",
+      flex: "0 0 22px",
+      margin: "0",
+      padding: "0",
+      border: "1px solid #3f3f46",
+      "border-radius": "4px",
+      background: "#27272a",
+      color: "#f4f4f5",
+      cursor: btn.disabled ? "default" : "pointer",
+      opacity: btn.disabled ? "0.35" : "1",
+      "align-items": "center",
+      "justify-content": "center",
+      "font-size": "12px",
+      "line-height": "1",
+      "font-family": "system-ui, sans-serif"
+    };
+    Object.entries(orderStyle).forEach(([key, value]) => {
+      btn.style.setProperty(key, value, "important");
+    });
+  });
   keepToggleDockOnScreen(dock);
 }
 
@@ -4423,10 +4465,13 @@ function beginToggleRename(groupId, nameEl) {
 
 function bindToggleDockEvents(dock) {
   dock.addEventListener("click", (e) => {
-    if (dock.dataset.suppressClick === "1") {
-      dock.dataset.suppressClick = "";
+    const orderBtn = e.target.closest("[data-move-toggle]");
+    if (orderBtn) {
       e.preventDefault();
       e.stopPropagation();
+      if (orderBtn.disabled) return;
+      const dir = Number(orderBtn.getAttribute("data-move-dir"));
+      shiftToggleGroup(orderBtn.getAttribute("data-move-toggle"), dir);
       return;
     }
     const toggleBtn = e.target.closest(".adblock-toggle-switch");
@@ -4450,104 +4495,6 @@ function bindToggleDockEvents(dock) {
       e.stopPropagation();
       beginToggleRename(renameBtn.getAttribute("data-rename-toggle"), renameBtn);
     }
-  });
-
-  dock.addEventListener("pointerdown", (e) => {
-    if (e.pointerType === "mouse" && e.button !== 0) return;
-    if (e.target.closest(".adblock-toggle-switch, .adblock-toggle-remove, .adblock-toggle-rename-input")) return;
-    const row = e.target.closest(".adblock-toggle-row");
-    if (!row || !dock.contains(row)) return;
-
-    const list = dock.querySelector(".adblock-toggle-dock-list");
-    const draggingId = row.getAttribute("data-row-id");
-    if (!list || !draggingId) return;
-
-    const pointerId = e.pointerId;
-    const startX = e.clientX;
-    const startY = e.clientY;
-    let lastY = e.clientY;
-    let armed = false;
-    let moved = false;
-    let dropIndex = 0;
-    let line = null;
-    let timer = 0;
-
-    const locate = (clientY) => {
-      if (!line) return;
-      const listRect = list.getBoundingClientRect();
-      if (clientY < listRect.top + 28) list.scrollTop -= 14;
-      else if (clientY > listRect.bottom - 28) list.scrollTop += 14;
-
-      const others = Array.from(list.querySelectorAll(".adblock-toggle-row"))
-        .filter((item) => item.getAttribute("data-row-id") !== draggingId);
-      let index = others.length;
-      let lineTop = 8;
-      const freshRect = list.getBoundingClientRect();
-      for (let i = 0; i < others.length; i++) {
-        const rect = others[i].getBoundingClientRect();
-        if (clientY < rect.top + rect.height / 2) {
-          index = i;
-          lineTop = rect.top - freshRect.top + list.scrollTop - 4;
-          break;
-        }
-        lineTop = rect.bottom - freshRect.top + list.scrollTop + 2;
-      }
-      dropIndex = index;
-      line.style.setProperty("display", "block", "important");
-      line.style.setProperty("top", `${lineTop}px`, "important");
-    };
-
-    const arm = () => {
-      if (armed) return;
-      armed = true;
-      dock.dataset.suppressClick = "1";
-      row.classList.add("is-dragging");
-      row.style.setProperty("cursor", "grabbing", "important");
-      try { row.setPointerCapture(pointerId); } catch (err) {}
-      line = document.createElement("div");
-      line.className = "adblock-toggle-drop-line";
-      list.appendChild(line);
-      locate(lastY);
-    };
-
-    const finish = (ev) => {
-      if (ev && ev.pointerId !== pointerId) return;
-      clearTimeout(timer);
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", finish);
-      window.removeEventListener("pointercancel", finish);
-      list.removeEventListener("scroll", onScroll);
-      row.classList.remove("is-dragging");
-      row.style.removeProperty("cursor");
-      if (line) line.remove();
-      if (armed && moved) moveToggleGroup(draggingId, dropIndex);
-      if (armed) {
-        dock.dataset.suppressClick = "1";
-        setTimeout(() => { dock.dataset.suppressClick = ""; }, 0);
-      }
-    };
-
-    const onMove = (ev) => {
-      if (ev.pointerId !== pointerId) return;
-      lastY = ev.clientY;
-      const dist = Math.hypot(ev.clientX - startX, ev.clientY - startY);
-      if (!armed) {
-        if (dist > 8) finish(ev);
-        return;
-      }
-      if (dist > 3) moved = true;
-      ev.preventDefault();
-      locate(ev.clientY);
-    };
-    const onScroll = () => {
-      if (armed) locate(lastY);
-    };
-
-    timer = setTimeout(arm, 420);
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", finish);
-    window.addEventListener("pointercancel", finish);
-    list.addEventListener("scroll", onScroll);
   });
 }
 
