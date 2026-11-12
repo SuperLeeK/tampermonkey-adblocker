@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202611051935
+// @version      202611121632
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_download
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_openInTab
@@ -17,7 +18,11 @@
 // @require      https://raw.githubusercontent.com/SuperLeeK/web-javascript-lib/refs/heads/main/widgets/toast.js
 // @require      https://raw.githubusercontent.com/SuperLeeK/web-javascript-lib/refs/heads/main/libs/useGist.js
 // @require      https://raw.githubusercontent.com/SuperLeeK/web-javascript-lib/refs/heads/main/libs/useKeyPress.js
+// @require      https://raw.githubusercontent.com/SuperLeeK/web-javascript-lib/refs/heads/main/libs/utils.js
+// @require      https://raw.githubusercontent.com/SuperLeeK/web-javascript-lib/refs/heads/main/libs/bindUniversalButton.js
+// @require      https://raw.githubusercontent.com/SuperLeeK/web-javascript-lib/refs/heads/main/libs/useDownload.js
 // @connect      api.github.com
+// @connect      *
 // @updateURL    https://github.com/SuperLeeK/tampermonkey-adblocker/raw/refs/heads/main/adblocker.user.js
 // @downloadURL  https://github.com/SuperLeeK/tampermonkey-adblocker/raw/refs/heads/main/adblocker.user.js
 // @exclude      https://github.com/*
@@ -25,6 +30,512 @@
 // @exclude      https://*google*
 // @exclude      https://*github*
 // ==/UserScript==
+
+// web-javascript-lib 일부를 페이지 전역 WJL로 넘긴다.
+// GM API는 샌드박스 클로저 안에 남기고, Firefox 샌드박스에서는 exportFunction/cloneInto로 페이지에서 호출되게 한다.
+function installPageWJL() {
+  if (window.__adblock_wjlInstalled) return;
+  window.__adblock_wjlInstalled = true;
+
+  let pageWin = window;
+  try {
+    if (typeof unsafeWindow !== 'undefined' && unsafeWindow) pageWin = unsafeWindow;
+  } catch (e) {}
+
+  let crossRealm = false;
+  if (pageWin !== window) {
+    try {
+      crossRealm = pageWin.Array !== Array;
+    } catch (e) {
+      crossRealm = true;
+    }
+  }
+
+  function warnExists(path) {
+    console.warn('[Dynamic Ad Blocker] ' + path + ' already exists; leaving it in place.');
+  }
+
+  function warnAssign(path, err) {
+    console.warn('[Dynamic Ad Blocker] Could not assign ' + path, err);
+  }
+
+  function isNode(value) {
+    try {
+      return typeof Node !== 'undefined' && value instanceof Node;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function isEvent(value) {
+    try {
+      return typeof Event !== 'undefined' && value instanceof Event;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function isHostObject(value) {
+    if (!value || (typeof value !== 'object' && typeof value !== 'function')) return false;
+    if (isNode(value) || isEvent(value)) return true;
+    try {
+      if (typeof Window !== 'undefined' && value instanceof Window) return true;
+    } catch (e) {}
+    let tag = '';
+    try { tag = Object.prototype.toString.call(value); } catch (e) { return false; }
+    return tag === '[object Window]' || tag === '[object Document]' || tag === '[object HTMLDocument]';
+  }
+
+  function isPromise(value) {
+    return !!value && typeof value === 'object' && typeof value.then === 'function';
+  }
+
+  function isPlainObject(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    if (isHostObject(value) || isPromise(value)) return false;
+    let proto;
+    try { proto = Object.getPrototypeOf(value); } catch (e) { return false; }
+    return proto === Object.prototype || proto === null;
+  }
+
+  function writable(obj) {
+    if (!crossRealm || obj == null) return obj;
+    try {
+      if (obj.wrappedJSObject && obj.wrappedJSObject !== obj) return obj.wrappedJSObject;
+    } catch (e) {}
+    return obj;
+  }
+
+  function toPlainData(value, seen) {
+    if (value == null) return value;
+    const t = typeof value;
+    if (t === 'function') return undefined;
+    if (t !== 'object') return value;
+    if (isHostObject(value)) return undefined;
+    seen = seen || new WeakSet();
+    if (seen.has(value)) return null;
+    try { seen.add(value); } catch (e) {}
+    let isError = false;
+    try { isError = value instanceof Error; } catch (e) {}
+    if (isError) {
+      return { name: String(value.name || 'Error'), message: String(value.message || '') };
+    }
+    if (Array.isArray(value)) return value.map((item) => toPlainData(item, seen));
+    if (!isPlainObject(value)) {
+      try { return String((value && (value.message || value.error)) || value); } catch (e) { return null; }
+    }
+    const out = {};
+    Object.keys(value).forEach((key) => {
+      const plain = toPlainData(value[key], seen);
+      if (plain !== undefined) out[key] = plain;
+    });
+    return out;
+  }
+
+  function toPageArg(arg) {
+    if (!crossRealm || arg == null) return arg;
+    const t = typeof arg;
+    if (t === 'function' || t !== 'object') return arg;
+    if (isHostObject(arg)) {
+      try { if (arg.wrappedJSObject) return arg.wrappedJSObject; } catch (e) {}
+      return arg;
+    }
+    try {
+      if (arg.wrappedJSObject && arg.wrappedJSObject !== arg) return arg.wrappedJSObject;
+    } catch (e) {}
+    if (typeof cloneInto === 'function') {
+      try { return cloneInto(toPlainData(arg), pageWin); } catch (e) {}
+    }
+    return arg;
+  }
+
+  function wrapPageFn(pageFn) {
+    if (typeof pageFn !== 'function' || !crossRealm) return pageFn;
+    return function forwarded(...args) {
+      const pageArgs = args.map(toPageArg);
+      try {
+        return pageFn.apply(pageWin, pageArgs);
+      } catch (err) {
+        try {
+          const raw = pageFn.wrappedJSObject;
+          if (typeof raw === 'function' && raw !== pageFn) return raw.apply(pageWin, pageArgs);
+        } catch (e) {}
+        throw err;
+      }
+    };
+  }
+
+  function toSandboxValue(arg, depth, seen) {
+    if (!crossRealm || arg == null) return arg;
+    const t = typeof arg;
+    if (t === 'function') return wrapPageFn(arg);
+    if (t !== 'object') return arg;
+    if (isHostObject(arg)) return arg;
+    if ((depth || 0) > 8) return arg;
+    seen = seen || new WeakSet();
+    let raw = arg;
+    try {
+      if (arg.wrappedJSObject && arg.wrappedJSObject !== arg) raw = arg.wrappedJSObject;
+    } catch (e) {}
+    if (raw !== arg) return toSandboxValue(raw, (depth || 0) + 1, seen);
+    if (seen.has(arg)) return undefined;
+    try { seen.add(arg); } catch (e) {}
+    if (isPromise(arg)) return arg;
+    if (Array.isArray(arg)) return arg.map((item) => toSandboxValue(item, (depth || 0) + 1, seen));
+    if (!isPlainObject(arg)) return arg;
+    const out = {};
+    Object.keys(arg).forEach((key) => {
+      try { out[key] = toSandboxValue(arg[key], (depth || 0) + 1, seen); } catch (e) {}
+    });
+    return out;
+  }
+
+  function toSandboxList(args) {
+    const out = [];
+    for (let i = 0; i < args.length; i++) out.push(toSandboxValue(args[i], 0));
+    return out;
+  }
+
+  function bridgeFunction(fn, name) {
+    const bridged = function (...args) {
+      const result = fn.apply(undefined, toSandboxList(args));
+      return toPageValue(result);
+    };
+    if (name) {
+      try { Object.defineProperty(bridged, 'name', { value: name }); } catch (e) {}
+    }
+    return bridged;
+  }
+
+  function bridgePromise(promise) {
+    const executor = function (resolve, reject) {
+      promise.then(
+        function (value) {
+          try { resolve(toPageValue(value)); } catch (e) { resolve(undefined); }
+        },
+        function (err) {
+          let message = 'Error';
+          try { message = String((err && (err.message || err.error)) || err); } catch (e) {}
+          try {
+            if (pageWin.Error) reject(new pageWin.Error(message));
+            else reject(message);
+          } catch (e) {
+            reject(message);
+          }
+        }
+      );
+    };
+    let executorFn = executor;
+    if (typeof exportFunction === 'function') {
+      try { executorFn = exportFunction(executor, pageWin); } catch (e) {}
+    }
+    try {
+      return new pageWin.Promise(executorFn);
+    } catch (e) {
+      return promise;
+    }
+  }
+
+  function toPageValue(value, seen) {
+    if (!crossRealm || value == null) return value;
+    const t = typeof value;
+    if (t === 'function') {
+      const bridged = bridgeFunction(value);
+      if (typeof exportFunction === 'function') {
+        try { return exportFunction(bridged, pageWin); } catch (e) {}
+      }
+      return bridged;
+    }
+    if (t !== 'object') return value;
+    if (isHostObject(value)) {
+      try { if (value.wrappedJSObject) return value.wrappedJSObject; } catch (e) {}
+      return value;
+    }
+    if (isPromise(value)) return bridgePromise(value);
+    seen = seen || new WeakSet();
+    if (seen.has(value)) return undefined;
+    try { seen.add(value); } catch (e) {}
+
+    if (Array.isArray(value)) {
+      const mapped = value.map((item) => toPageValue(item, seen));
+      const dataOnly = mapped.every((item) => item == null || (typeof item !== 'object' && typeof item !== 'function'));
+      if (dataOnly && typeof cloneInto === 'function') {
+        try { return cloneInto(mapped, pageWin); } catch (e) {}
+      }
+      try {
+        const Ctor = pageWin.Array || Array;
+        const arr = new Ctor();
+        mapped.forEach((item) => arr.push(item));
+        return arr;
+      } catch (e) {
+        return mapped;
+      }
+    }
+
+    const funcKeys = [];
+    const plain = {};
+    Object.keys(value).forEach((key) => {
+      const child = value[key];
+      if (typeof child === 'function') funcKeys.push(key);
+      else {
+        const data = toPlainData(child, seen);
+        if (data !== undefined) plain[key] = data;
+      }
+    });
+
+    let obj = plain;
+    if (typeof cloneInto === 'function') {
+      try { obj = cloneInto(plain, pageWin); } catch (e) { obj = {}; }
+    } else if (typeof createObjectIn === 'function') {
+      try {
+        obj = createObjectIn(pageWin);
+        Object.keys(plain).forEach((key) => { obj[key] = plain[key]; });
+      } catch (e) {}
+    }
+    funcKeys.forEach((key) => {
+      const bridged = bridgeFunction(value[key].bind(value), key);
+      if (typeof exportFunction === 'function') {
+        try { exportFunction(bridged, obj, { defineAs: key }); return; } catch (e) {}
+      }
+      try { obj[key] = bridged; } catch (e) {}
+    });
+    return obj;
+  }
+
+  function hasKey(obj, key) {
+    if (obj == null) return false;
+    const dest = writable(obj);
+    try {
+      return Object.prototype.hasOwnProperty.call(dest, key) && typeof dest[key] !== 'undefined';
+    } catch (e) {
+      return true;
+    }
+  }
+
+  function createBlank() {
+    if (crossRealm && typeof cloneInto === 'function') {
+      try { return cloneInto({}, pageWin); } catch (e) {}
+    }
+    if (crossRealm && typeof createObjectIn === 'function') {
+      try { return createObjectIn(pageWin); } catch (e) {}
+    }
+    return {};
+  }
+
+  function publishFunction(target, key, fn, path) {
+    if (typeof fn !== 'function') return false;
+    if (hasKey(target, key)) {
+      warnExists(path);
+      return false;
+    }
+    const bridged = bridgeFunction(fn, key);
+    const dest = writable(target);
+    if (crossRealm && typeof exportFunction === 'function') {
+      try {
+        exportFunction(bridged, dest, { defineAs: key });
+        return true;
+      } catch (e) {}
+    }
+    try {
+      dest[key] = bridged;
+      return true;
+    } catch (e) {
+      warnAssign(path, e);
+      return false;
+    }
+  }
+
+  function publishRaw(target, key, value, path) {
+    if (hasKey(target, key)) {
+      warnExists(path);
+      return false;
+    }
+    const dest = writable(target);
+    try {
+      dest[key] = value;
+      return true;
+    } catch (e) {
+      warnAssign(path, e);
+      return false;
+    }
+  }
+
+  function publishLiveView(target, owner, key, path) {
+    if (hasKey(target, key)) {
+      warnExists(path);
+      return false;
+    }
+    const dest = writable(target);
+    const getter = function () {
+      const current = owner[key];
+      return crossRealm ? toPageValue(current) : current;
+    };
+    const setter = function (next) {
+      const incoming = toSandboxValue(next, 0);
+      if (incoming && typeof incoming === 'object') owner[key] = incoming;
+    };
+    try {
+      const define = (crossRealm && pageWin.Object && pageWin.Object.defineProperty)
+        ? pageWin.Object.defineProperty
+        : Object.defineProperty;
+      const get = (crossRealm && typeof exportFunction === 'function') ? exportFunction(getter, pageWin) : getter;
+      const set = (crossRealm && typeof exportFunction === 'function') ? exportFunction(setter, pageWin) : setter;
+      define(dest, key, { configurable: true, enumerable: true, get: get, set: set });
+      return true;
+    } catch (e) {
+      try {
+        dest[key] = crossRealm ? toPageValue(owner[key]) : owner[key];
+        return true;
+      } catch (err) {
+        warnAssign(path, err);
+        return false;
+      }
+    }
+  }
+
+  function readExisting() {
+    try {
+      return (crossRealm ? writable(pageWin) : pageWin).WJL;
+    } catch (e) {
+      return undefined;
+    }
+  }
+
+  function writeWJL(value) {
+    try {
+      const dest = crossRealm ? writable(pageWin) : pageWin;
+      dest.WJL = value;
+      return true;
+    } catch (e) {
+      warnAssign('window.WJL', e);
+      return false;
+    }
+  }
+
+  function removePageLeak(name, expected) {
+    if (!expected) return;
+    try {
+      const dest = crossRealm ? writable(pageWin) : pageWin;
+      if (dest[name] === expected) delete dest[name];
+    } catch (e) {}
+  }
+
+  let publishedBinder = false;
+
+  try {
+    const existing = readExisting();
+    if (existing != null && typeof existing !== 'object') {
+      console.warn('[Dynamic Ad Blocker] window.WJL already exists and is not an object. WJL export skipped.');
+      return;
+    }
+
+    const created = existing == null;
+    const ns = created ? createBlank() : writable(existing);
+    let added = 0;
+
+    function addFn(name, fn) {
+      if (typeof fn !== 'function') return;
+      if (publishFunction(ns, name, fn, 'WJL.' + name)) {
+        added++;
+        if (name === 'bindUniversalButton') publishedBinder = true;
+      }
+    }
+
+    addFn('cssToObject', typeof cssToObject === 'function' ? cssToObject : null);
+    addFn('objectToCss', typeof objectToCss === 'function' ? objectToCss : null);
+    addFn('queryStringToObject', typeof queryStringToObject === 'function' ? queryStringToObject : null);
+    addFn('objectToQueryString', typeof objectToQueryString === 'function' ? objectToQueryString : null);
+    addFn('waitFor', typeof waitFor === 'function' ? waitFor : null);
+    addFn('waitForSeconds', typeof waitForSeconds === 'function' ? waitForSeconds : null);
+    addFn('waitForSelector', typeof waitForSelector === 'function' ? waitForSelector : null);
+    addFn('findElement', typeof findElement === 'function' ? findElement : null);
+    addFn('findElements', typeof findElements === 'function' ? findElements : null);
+    addFn('findElementByTextContent', typeof findElementByTextContent === 'function' ? findElementByTextContent : null);
+    addFn('findElementsByTextContent', typeof findElementsByTextContent === 'function' ? findElementsByTextContent : null);
+    addFn('findElementByProperty', typeof findElementByProperty === 'function' ? findElementByProperty : null);
+    addFn('findElementsByProperty', typeof findElementsByProperty === 'function' ? findElementsByProperty : null);
+    addFn('triggerToElement', typeof triggerToElement === 'function' ? triggerToElement : null);
+    addFn('clickToElement', typeof clickToElement === 'function' ? clickToElement : null);
+    addFn('useKeyPress', typeof useKeyPress === 'function' ? useKeyPress : null);
+    addFn('useKeysPress', typeof useKeysPress === 'function' ? useKeysPress : null);
+    addFn('useGetKeyPress', typeof useGetKeyPress === 'function' ? useGetKeyPress : null);
+    addFn('useGetKeysPress', typeof useGetKeysPress === 'function' ? useGetKeysPress : null);
+    addFn('bindUniversalButton', typeof bindUniversalButton === 'function' ? bindUniversalButton : null);
+
+    function addApi(name, source) {
+      if (!source || typeof source !== 'object') return;
+      if (hasKey(ns, name)) {
+        warnExists('WJL.' + name);
+        return;
+      }
+      const pageObj = createBlank();
+      let members = 0;
+      Object.keys(source).forEach((key) => {
+        const value = source[key];
+        const path = 'WJL.' + name + '.' + key;
+        if (typeof value === 'function') {
+          if (publishFunction(pageObj, key, value.bind(source), path)) members++;
+        } else if (value && typeof value === 'object') {
+          if (publishLiveView(pageObj, source, key, path)) members++;
+        } else if (publishRaw(pageObj, key, value, path)) {
+          members++;
+        }
+      });
+      if (members && publishRaw(ns, name, pageObj, 'WJL.' + name)) added++;
+    }
+
+    addApi('Toast', typeof Toast !== 'undefined' ? Toast : null);
+    addApi('useDownload', typeof useDownload !== 'undefined' ? useDownload : (typeof window.useDownload !== 'undefined' ? window.useDownload : null));
+
+    if (created) {
+      if (!added) {
+        console.warn('[Dynamic Ad Blocker] WJL export found no library APIs to publish.');
+        return;
+      }
+      if (!writeWJL(ns)) return;
+    }
+
+    if (publishedBinder && typeof document !== 'undefined' && document && document.addEventListener) {
+      document.addEventListener('submit', function (event) {
+        if (!crossRealm) return;
+        const form = event && event.target;
+        if (!form || form.id !== '__binder_inner_form__') return;
+        let fnName = '';
+        try {
+          const input = form.querySelector && form.querySelector('#__fn_name_input__');
+          fnName = input && input.value ? String(input.value).trim() : '';
+        } catch (e) {
+          return;
+        }
+        if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(fnName)) return;
+        let fn;
+        try { fn = window[fnName]; } catch (e) { return; }
+        if (typeof fn !== 'function') return;
+        try {
+          const dest = writable(pageWin);
+          if (typeof dest[fnName] !== 'undefined') {
+            console.warn('[Dynamic Ad Blocker] Page already has global ' + fnName + '; bindUniversalButton did not replace it.');
+            return;
+          }
+          if (typeof exportFunction === 'function') exportFunction(fn, dest, { defineAs: fnName });
+          else dest[fnName] = fn;
+        } catch (e) {
+          console.warn('[Dynamic Ad Blocker] Could not publish ' + fnName + ' to the page.', e);
+        }
+      }, false);
+    }
+  } finally {
+    removePageLeak('useDownload', typeof useDownload !== 'undefined' ? useDownload : window.useDownload);
+    removePageLeak('bindUniversalButton', typeof bindUniversalButton === 'function' ? bindUniversalButton : null);
+  }
+}
+
+try {
+  installPageWJL();
+} catch (err) {
+  console.warn('[Dynamic Ad Blocker] WJL export failed:', err);
+}
+// --- END WJL ---
 
 function normalizeDomain(str) {
   if (!str || typeof str !== 'string') return '';
