@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dynamic Ad Blocker
 // @namespace    ADBlocker
-// @version      202611121632
+// @version      202611130859
 // @description  Hides ads dynamically based on selectors from a GitHub Gist URL.
 // @author       Zero
 // @match        *://*/*
@@ -12,6 +12,7 @@
 // @grant        GM_openInTab
 // @grant        GM_webRequest
 // @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @grant        unsafeWindow
 // @run-at       document-start
 // @require      https://raw.githubusercontent.com/SuperLeeK/web-javascript-lib/refs/heads/main/widgets/button.js
@@ -33,6 +34,45 @@
 
 // web-javascript-lib 일부를 페이지 전역 WJL로 넘긴다.
 // GM API는 샌드박스 클로저 안에 남기고, Firefox 샌드박스에서는 exportFunction/cloneInto로 페이지에서 호출되게 한다.
+
+// 라이브러리 레지스트리. 셋은 같은 객체다.
+// bindUniversalButton.bound === bindUniversalButtonAsync.bound === window.WJLBound
+// @require 캐시가 옛 파일이면 이 속성이 없다. typeof 로만 확인하고 없으면 건너뛴다.
+function readBinderRegistry() {
+  function asRegistry(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    if (typeof value.nodeType === 'number') return null;
+    return value;
+  }
+  const apiReady = (typeof bindUniversalButton === 'function') || (typeof bindUniversalButtonAsync === 'function');
+  if (!apiReady) return null;
+  try {
+    if (typeof bindUniversalButton === 'function') {
+      const found = asRegistry(bindUniversalButton.bound);
+      if (found) return found;
+    }
+  } catch (e) {}
+  try {
+    if (typeof bindUniversalButtonAsync === 'function') {
+      const found = asRegistry(bindUniversalButtonAsync.bound);
+      if (found) return found;
+    }
+  } catch (e) {}
+  try {
+    if (typeof window !== 'undefined') {
+      const found = asRegistry(window.WJLBound);
+      if (found) return found;
+    }
+  } catch (e) {}
+  try {
+    if (typeof unsafeWindow !== 'undefined' && unsafeWindow) {
+      const found = asRegistry(unsafeWindow.WJLBound);
+      if (found) return found;
+    }
+  } catch (e) {}
+  return null;
+}
+
 function installPageWJL() {
   if (window.__adblock_wjlInstalled) return;
   window.__adblock_wjlInstalled = true;
@@ -50,6 +90,8 @@ function installPageWJL() {
       crossRealm = true;
     }
   }
+
+  const boundFnCache = new WeakMap();
 
   function warnExists(path) {
     console.warn('[Dynamic Ad Blocker] ' + path + ' already exists; leaving it in place.');
@@ -273,10 +315,12 @@ function installPageWJL() {
     }
 
     const funcKeys = [];
+    const liveKeys = [];
     const plain = {};
     Object.keys(value).forEach((key) => {
       const child = value[key];
       if (typeof child === 'function') funcKeys.push(key);
+      else if (isHostObject(child) || isPromise(child)) liveKeys.push(key);
       else {
         const data = toPlainData(child, seen);
         if (data !== undefined) plain[key] = data;
@@ -292,6 +336,18 @@ function installPageWJL() {
         Object.keys(plain).forEach((key) => { obj[key] = plain[key]; });
       } catch (e) {}
     }
+    liveKeys.forEach((key) => {
+      try {
+        const child = value[key];
+        if (isPromise(child)) {
+          obj[key] = bridgePromise(child);
+          return;
+        }
+        let node = child;
+        try { if (child && child.wrappedJSObject) node = child.wrappedJSObject; } catch (e) {}
+        obj[key] = node;
+      } catch (e) {}
+    });
     funcKeys.forEach((key) => {
       const bridged = bridgeFunction(value[key].bind(value), key);
       if (typeof exportFunction === 'function') {
@@ -437,7 +493,7 @@ function installPageWJL() {
       if (typeof fn !== 'function') return;
       if (publishFunction(ns, name, fn, 'WJL.' + name)) {
         added++;
-        if (name === 'bindUniversalButton') publishedBinder = true;
+        if (name === 'bindUniversalButton' || name === 'bindUniversalButtonAsync') publishedBinder = true;
       }
     }
 
@@ -461,6 +517,8 @@ function installPageWJL() {
     addFn('useGetKeyPress', typeof useGetKeyPress === 'function' ? useGetKeyPress : null);
     addFn('useGetKeysPress', typeof useGetKeysPress === 'function' ? useGetKeysPress : null);
     addFn('bindUniversalButton', typeof bindUniversalButton === 'function' ? bindUniversalButton : null);
+    addFn('bindUniversalButtonAsync', typeof bindUniversalButtonAsync === 'function' ? bindUniversalButtonAsync : null);
+    if (readBinderRegistry()) publishLiveBound(ns);
 
     function addApi(name, source) {
       if (!source || typeof source !== 'object') return;
@@ -495,6 +553,8 @@ function installPageWJL() {
       if (!writeWJL(ns)) return;
     }
 
+    aliasPageWjl(ns);
+
     if (publishedBinder && typeof document !== 'undefined' && document && document.addEventListener) {
       document.addEventListener('submit', function (event) {
         if (!crossRealm) return;
@@ -508,17 +568,20 @@ function installPageWJL() {
           return;
         }
         if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(fnName)) return;
-        let fn;
-        try { fn = window[fnName]; } catch (e) { return; }
+        let fn = null;
+        try {
+          const reg = readBinderRegistry();
+          if (reg && typeof reg[fnName] === 'function') fn = reg[fnName];
+        } catch (e) {}
+        if (typeof fn !== 'function') {
+          try { fn = window[fnName]; } catch (e) { return; }
+        }
         if (typeof fn !== 'function') return;
         try {
           const dest = writable(pageWin);
-          if (typeof dest[fnName] !== 'undefined') {
-            console.warn('[Dynamic Ad Blocker] Page already has global ' + fnName + '; bindUniversalButton did not replace it.');
-            return;
-          }
-          if (typeof exportFunction === 'function') exportFunction(fn, dest, { defineAs: fnName });
-          else dest[fnName] = fn;
+          const bridged = bridgeFunction(fn, fnName);
+          if (typeof exportFunction === 'function') exportFunction(bridged, dest, { defineAs: fnName });
+          else if (typeof dest[fnName] === 'undefined') dest[fnName] = bridged;
         } catch (e) {
           console.warn('[Dynamic Ad Blocker] Could not publish ' + fnName + ' to the page.', e);
         }
@@ -527,6 +590,190 @@ function installPageWJL() {
   } finally {
     removePageLeak('useDownload', typeof useDownload !== 'undefined' ? useDownload : window.useDownload);
     removePageLeak('bindUniversalButton', typeof bindUniversalButton === 'function' ? bindUniversalButton : null);
+    removePageLeak('bindUniversalButtonAsync', typeof bindUniversalButtonAsync === 'function' ? bindUniversalButtonAsync : null);
+  }
+
+  function bridgeCallable(fn) {
+    if (typeof fn !== 'function') return fn;
+    if (!crossRealm) return fn;
+    if (boundFnCache.has(fn)) return boundFnCache.get(fn);
+    const bridged = bridgeFunction(fn);
+    let exported = bridged;
+    if (typeof exportFunction === 'function') {
+      try { exported = exportFunction(bridged, pageWin); } catch (e) {}
+    }
+    try { boundFnCache.set(fn, exported); } catch (e) {}
+    return exported;
+  }
+
+  function pageKeyList(keys) {
+    const names = keys.map((key) => String(key));
+    try {
+      if (pageWin.Array && typeof pageWin.Array.from === 'function') {
+        const arr = pageWin.Array.from(names);
+        if (Array.isArray(arr)) return arr;
+      }
+    } catch (e) {}
+    try {
+      const Ctor = pageWin.Array || Array;
+      const arr = new Ctor();
+      if (Array.isArray(arr)) {
+        names.forEach((key) => arr.push(key));
+        return arr;
+      }
+    } catch (e) {}
+    return names;
+  }
+
+  function publishLiveBound(target) {
+    const registry = readBinderRegistry();
+    if (!registry) return false;
+    if (hasKey(target, 'bound')) {
+      warnExists('WJL.bound');
+      return false;
+    }
+    const dest = writable(target);
+    const view = createBoundView();
+    if (view) {
+      try {
+        dest.bound = view;
+        return true;
+      } catch (e) {
+        warnAssign('WJL.bound', e);
+      }
+    }
+    const getter = function () {
+      const current = readBinderRegistry();
+      if (!current) return createBlank();
+      return crossRealm ? toPageValue(current) : current;
+    };
+    try {
+      const define = (crossRealm && pageWin.Object && pageWin.Object.defineProperty)
+        ? pageWin.Object.defineProperty
+        : Object.defineProperty;
+      const get = (crossRealm && typeof exportFunction === 'function') ? exportFunction(getter, pageWin) : getter;
+      define(dest, 'bound', { configurable: true, enumerable: true, get: get });
+      return true;
+    } catch (err) {
+      warnAssign('WJL.bound', err);
+      return false;
+    }
+  }
+
+  function createBoundView() {
+    const registry = readBinderRegistry();
+    if (!registry) return null;
+    if (!crossRealm) return registry;
+
+    const readProp = function (_target, prop) {
+      if (typeof prop !== 'string' || prop === 'then') return undefined;
+      const reg = readBinderRegistry();
+      if (!reg) return undefined;
+      let value;
+      try { value = reg[prop]; } catch (e) { return undefined; }
+      if (typeof value === 'function') return bridgeCallable(value);
+      if (value == null || typeof value !== 'object') return value;
+      return toPageValue(value);
+    };
+    const hasProp = function (_target, prop) {
+      if (typeof prop !== 'string') return false;
+      const reg = readBinderRegistry();
+      return !!(reg && Object.prototype.hasOwnProperty.call(reg, prop));
+    };
+    const ownKeys = function () {
+      const reg = readBinderRegistry();
+      let keys = [];
+      try { keys = reg ? Object.keys(reg) : []; } catch (e) {}
+      return pageKeyList(keys);
+    };
+    const describeProp = function (_target, prop) {
+      if (typeof prop !== 'string') return undefined;
+      const reg = readBinderRegistry();
+      if (!reg || !Object.prototype.hasOwnProperty.call(reg, prop)) return undefined;
+      const value = readProp(_target, prop);
+      const desc = createBlank();
+      try {
+        desc.configurable = true;
+        desc.enumerable = true;
+        desc.writable = true;
+        desc.value = value;
+        return desc;
+      } catch (e) {
+        return { configurable: true, enumerable: true, writable: true, value: value };
+      }
+    };
+
+    if (typeof pageWin.Proxy !== 'function') return null;
+    try {
+      const handler = createBlank();
+      const traps = { get: readProp, has: hasProp, ownKeys: ownKeys, getOwnPropertyDescriptor: describeProp };
+      Object.keys(traps).forEach((key) => {
+        let fn = traps[key];
+        if (typeof exportFunction === 'function') {
+          try { exportFunction(fn, handler, { defineAs: key }); return; } catch (e) {}
+        }
+        try { handler[key] = fn; } catch (e) {}
+      });
+      return new pageWin.Proxy(createBlank(), handler);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function aliasPageWjl(ns) {
+    let dest;
+    try { dest = crossRealm ? writable(pageWin) : pageWin; } catch (e) { return; }
+    let existing;
+    try { existing = dest.wjl; } catch (e) { return; }
+    if (existing != null && typeof existing !== 'object') {
+      console.warn('[Dynamic Ad Blocker] window.wjl already exists and is not an object. wjl alias skipped.');
+      return;
+    }
+
+    let shared = ns;
+    try {
+      if (dest.WJL && typeof dest.WJL === 'object') shared = dest.WJL;
+    } catch (e) {}
+
+    if (existing == null) {
+      try { dest.wjl = shared; } catch (e) { warnAssign('window.wjl', e); }
+      return;
+    }
+    try {
+      if (existing === shared || writable(existing) === writable(shared)) return;
+    } catch (e) {}
+
+    const target = writable(existing);
+    const source = writable(shared);
+    let keys = [];
+    try { keys = Object.keys(source); } catch (e) { return; }
+    keys.forEach((key) => {
+      if (hasKey(target, key)) {
+        warnExists('wjl.' + key);
+        return;
+      }
+      try {
+        const define = (crossRealm && pageWin.Object && pageWin.Object.defineProperty)
+          ? pageWin.Object.defineProperty
+          : Object.defineProperty;
+        const getDesc = (crossRealm && pageWin.Object && pageWin.Object.getOwnPropertyDescriptor)
+          ? pageWin.Object.getOwnPropertyDescriptor
+          : Object.getOwnPropertyDescriptor;
+        const desc = getDesc(source, key);
+        if (desc && (desc.get || desc.set)) {
+          define(target, key, {
+            configurable: true,
+            enumerable: desc.enumerable !== false,
+            get: desc.get,
+            set: desc.set
+          });
+          return;
+        }
+        target[key] = source[key];
+      } catch (e) {
+        try { target[key] = source[key]; } catch (err) { warnAssign('wjl.' + key, err); }
+      }
+    });
   }
 }
 
@@ -768,101 +1015,158 @@ async function handleBlacklistReleaseClick() {
   }, 1000);
 }
 
+// Tampermonkey 4.20+ / Violentmonkey: {id, autoClose}로 같은 항목을 갱신한다.
+// 그 외 매니저는 캡션 문자열만 등록하고, GM_unregisterMenuCommand가 있으면 그걸로 교체한다.
+let menuOptionsMode = null;
+const classicMenuIds = Object.create(null);
+
+function gmMenuSupportsCommandOptions() {
+  try {
+    const info = typeof GM_info !== 'undefined' ? GM_info : null;
+    if (!info) return false;
+    const handler = String(info.scriptHandler || '').toLowerCase();
+    const parts = String(info.version || '0').split('.').map((n) => parseInt(n, 10) || 0);
+    const atLeast = (major, minor) => parts[0] > major || (parts[0] === major && parts[1] >= minor);
+    if (handler.indexOf('tampermonkey') !== -1) return atLeast(4, 20);
+    if (handler.indexOf('violentmonkey') !== -1) return atLeast(2, 15);
+  } catch (e) {}
+  return false;
+}
+
+function unregisterMenuCommand(id) {
+  if (id == null || typeof GM_unregisterMenuCommand !== 'function') return;
+  try { GM_unregisterMenuCommand(id); } catch (e) {}
+  const handle = classicMenuIds[id];
+  if (handle != null && handle !== true && handle !== id) {
+    try { GM_unregisterMenuCommand(handle); } catch (e) {}
+  }
+  delete classicMenuIds[id];
+}
+
+function registerMenuCommand(id, caption, callback, autoClose) {
+  if (typeof GM_registerMenuCommand !== 'function') return null;
+  const wantOptions = menuOptionsMode === true || (menuOptionsMode == null && gmMenuSupportsCommandOptions());
+  if (wantOptions && id) {
+    try {
+      GM_registerMenuCommand(caption, callback, { id: id, autoClose: autoClose !== false });
+      menuOptionsMode = true;
+      classicMenuIds[id] = id;
+      return id;
+    } catch (e) {
+      menuOptionsMode = false;
+    }
+  }
+  if (classicMenuIds[id] != null && typeof GM_unregisterMenuCommand === 'function') {
+    unregisterMenuCommand(id);
+  } else if (classicMenuIds[id] != null) {
+    return classicMenuIds[id];
+  }
+  try {
+    const handle = GM_registerMenuCommand(caption, callback);
+    classicMenuIds[id] = handle != null ? handle : true;
+    return classicMenuIds[id];
+  } catch (e) {
+    return null;
+  }
+}
+
+function floatingMenuCaption() {
+  return window.__adblock_isFloatingHidden ? '🎈 플로팅버튼: 숨김' : '🎈 플로팅버튼: 표시';
+}
+
+function blurMenuCaption() {
+  let enabled = false;
+  try { enabled = typeof isImageBlurEnabled === 'function' && isImageBlurEnabled(); } catch (e) {}
+  return enabled ? '🖼️ 이미지 블러: ON' : '🖼️ 이미지 블러: OFF';
+}
+
+function openGistConfigFromMenu() {
+  if (typeof window.__adblock_openGistConfig === 'function') {
+    window.__adblock_openGistConfig();
+  } else if (typeof showGistConfigModal === 'function') {
+    showGistConfigModal();
+  }
+}
+
+function openManualUpdate() {
+  const updateUrl = 'https://raw.githubusercontent.com/SuperLeeK/tampermonkey-adblocker/main/adblocker.user.js';
+  window.open(updateUrl, '_blank');
+}
+
+function onFloatingMenuClick() {
+  if (typeof window.__adblock_toggleFloatingButton === 'function') {
+    window.__adblock_toggleFloatingButton();
+    return;
+  }
+  const uiGroup = document.getElementById('adblock-ui-group');
+  if (uiGroup) {
+    const isVisible = uiGroup.style.display !== 'none' && uiGroup.style.visibility !== 'hidden';
+    if (isVisible) {
+      window.__adblock_isFloatingHidden = true;
+      uiGroup.style.display = 'none';
+      if (typeof Toast !== 'undefined' && Toast.show) Toast.show('플로팅 버튼을 숨겼습니다.');
+    } else {
+      window.__adblock_isFloatingHidden = false;
+      uiGroup.style.display = 'flex';
+      uiGroup.style.visibility = 'visible';
+      uiGroup.style.zIndex = '2147483647';
+      if (document.body) document.body.appendChild(uiGroup);
+      if (typeof Toast !== 'undefined' && Toast.show) Toast.show('플로팅 버튼을 띄웠습니다.');
+    }
+  }
+  refreshAdblockMenuCommands();
+}
+
+function onBlurMenuClick() {
+  if (typeof window.__adblock_toggleImageBlur === 'function') {
+    window.__adblock_toggleImageBlur();
+  }
+}
+
 function registerTampermonkeyMenuCommands(isBlacklisted = false) {
   if (window.top !== window.self) return; // iframe에서는 메뉴 등록 안함
   if (window.__adblockMenuRegistered) return;
   window.__adblockMenuRegistered = true;
+  window.__adblockMenuBlacklisted = !!isBlacklisted;
 
-  if (typeof GM_registerMenuCommand !== "undefined") {
-    try {
-      if (isBlacklisted) {
-        // 블랙리스트 페이지에서는 해제 메뉴, Gist 설정, 업데이트 메뉴만 등록
-        GM_registerMenuCommand("🟢 블랙리스트 해제", () => {
-          handleBlacklistReleaseClick();
-        });
-        GM_registerMenuCommand("⚙️ Gist 설정", () => {
-          if (typeof window.__adblock_openGistConfig === "function") {
-            window.__adblock_openGistConfig();
-          } else if (typeof showGistConfigModal === "function") {
-            showGistConfigModal();
-          }
-        });
-        GM_registerMenuCommand("🔄 수동 업데이트", () => {
-          const updateUrl = "https://raw.githubusercontent.com/SuperLeeK/tampermonkey-adblocker/main/adblocker.user.js";
-          window.open(updateUrl, "_blank");
-        });
-        return;
-      }
+  if (typeof GM_registerMenuCommand === 'undefined') return;
 
-      GM_registerMenuCommand("🎈 플로팅버튼 토글", () => {
-        if (typeof window.__adblock_toggleFloatingButton === "function") {
-          window.__adblock_toggleFloatingButton();
-        } else {
-          const uiGroup = document.getElementById("adblock-ui-group");
-          if (uiGroup) {
-            const isVisible = uiGroup.style.display !== "none" && uiGroup.style.visibility !== "hidden";
-            if (isVisible) {
-              window.__adblock_isFloatingHidden = true;
-              uiGroup.style.display = "none";
-              if (typeof Toast !== "undefined" && Toast.show) Toast.show("플로팅 버튼을 숨겼습니다.");
-            } else {
-              window.__adblock_isFloatingHidden = false;
-              uiGroup.style.display = "flex";
-              uiGroup.style.visibility = "visible";
-              uiGroup.style.zIndex = "2147483647";
-              if (document.body) document.body.appendChild(uiGroup);
-              if (typeof Toast !== "undefined" && Toast.show) Toast.show("플로팅 버튼을 띄웠습니다.");
-            }
-          }
-        }
-      });
+  try {
+    if (isBlacklisted) {
+      registerMenuCommand('adblock-blacklist-release', '🟢 블랙리스트 해제', () => {
+        handleBlacklistReleaseClick();
+      }, true);
+      registerMenuCommand('adblock-gist-config', '⚙️ Gist 설정', openGistConfigFromMenu, true);
+      registerMenuCommand('adblock-manual-update', '🔄 수동 업데이트', openManualUpdate, true);
+      return;
+    }
 
-      GM_registerMenuCommand("🖼️ 이미지 블러 토글", () => {
-        if (typeof window.__adblock_toggleImageBlur === "function") {
-          window.__adblock_toggleImageBlur();
-        }
-      });
+    registerMenuCommand('adblock-floating-toggle', floatingMenuCaption(), onFloatingMenuClick, false);
+    registerMenuCommand('adblock-image-blur-toggle', blurMenuCaption(), onBlurMenuClick, false);
+    registerMenuCommand('adblock-event-tracker', '🎧 이벤트 리스너 추적 결과', () => {
+      if (typeof showCapturedEventsModal === 'function') showCapturedEventsModal();
+    }, true);
+    registerMenuCommand('adblock-gist-config', '⚙️ Gist 설정', openGistConfigFromMenu, true);
+    registerMenuCommand('adblock-auth-config', '🔑 로그인 설정', () => {
+      if (typeof showAuthConfigModal === 'function') showAuthConfigModal();
+      else if (typeof Toast !== 'undefined' && Toast.show) Toast.show('로그인 설정 모달을 열 수 없습니다.');
+    }, true);
+    registerMenuCommand('adblock-delete-list', '🗑️ 설정 제거창', () => {
+      if (typeof window.__adblock_openDeleteList === 'function') window.__adblock_openDeleteList();
+      else if (typeof Toast !== 'undefined' && Toast.show) Toast.show('설정 제거창을 열 수 없습니다.');
+    }, true);
+    registerMenuCommand('adblock-blacklist-add', '⛔ 블랙리스트 추가', () => {
+      handleBlacklistClick();
+    }, true);
+    registerMenuCommand('adblock-manual-update', '🔄 수동 업데이트', openManualUpdate, true);
+  } catch (e) {}
+}
 
-      GM_registerMenuCommand("🎧 이벤트 리스너 추적 결과", () => {
-        if (typeof showCapturedEventsModal === "function") {
-          showCapturedEventsModal();
-        }
-      });
-
-      GM_registerMenuCommand("⚙️ Gist 설정", () => {
-        if (typeof window.__adblock_openGistConfig === "function") {
-          window.__adblock_openGistConfig();
-        } else if (typeof showGistConfigModal === "function") {
-          showGistConfigModal();
-        }
-      });
-
-      GM_registerMenuCommand("🔑 로그인 설정", () => {
-        if (typeof showAuthConfigModal === "function") {
-          showAuthConfigModal();
-        } else {
-          if (typeof Toast !== "undefined" && Toast.show) Toast.show("로그인 설정 모달을 열 수 없습니다.");
-        }
-      });
-
-      GM_registerMenuCommand("🗑️ 설정 제거창", () => {
-        if (typeof window.__adblock_openDeleteList === "function") {
-          window.__adblock_openDeleteList();
-        } else {
-          if (typeof Toast !== "undefined" && Toast.show) Toast.show("설정 제거창을 열 수 없습니다.");
-        }
-      });
-
-      GM_registerMenuCommand("⛔ 블랙리스트 추가", () => {
-        handleBlacklistClick();
-      });
-
-      GM_registerMenuCommand("🔄 수동 업데이트", () => {
-        const updateUrl = "https://raw.githubusercontent.com/SuperLeeK/tampermonkey-adblocker/main/adblocker.user.js";
-        window.open(updateUrl, "_blank");
-      });
-    } catch (e) {}
-  }
+function refreshAdblockMenuCommands() {
+  if (!window.__adblockMenuRegistered || window.__adblockMenuBlacklisted) return;
+  if (window.top !== window.self) return;
+  registerMenuCommand('adblock-floating-toggle', floatingMenuCaption(), onFloatingMenuClick, false);
+  registerMenuCommand('adblock-image-blur-toggle', blurMenuCaption(), onBlurMenuClick, false);
 }
 
 function initEventListenerTracker() {
@@ -3099,6 +3403,7 @@ window.__adblock_toggleImageBlur = async function() {
   GM_setValue(storageKey, nextState);
   applyImageBlurStyle(nextState);
   updateImageBlurButtonUI(nextState);
+  if (typeof refreshAdblockMenuCommands === 'function') refreshAdblockMenuCommands();
 
   if (typeof Toast !== "undefined" && Toast.show) {
     Toast.show(nextState ? "이미지 80% 블러 모드가 켜졌습니다. (Hover 시 원본 보기)" : "이미지 블러 모드가 꺼졌습니다.");
@@ -4284,6 +4589,9 @@ function parseRuleItem(item) {
   if (!textVal && item.key && item.target) {
     textVal = `'${item.key}' 키 -> ${item.target}`;
   }
+  if (!textVal && (item.when || item.do)) {
+    textVal = describeActionRule(item);
+  }
   return {
     text: textVal,
     createdAt: item.createdAt || null,
@@ -4409,14 +4717,27 @@ function replaceStringsInRuleItem(item, from, to) {
     if (!item.includes(from)) return { item, changed: false };
     return { item: item.split(from).join(to), changed: true };
   }
+  if (Array.isArray(item)) {
+    let changed = false;
+    item.forEach((child, index) => {
+      const result = replaceStringsInRuleItem(child, from, to);
+      if (!result.changed) return;
+      item[index] = result.item;
+      changed = true;
+    });
+    return { item, changed };
+  }
   if (!item || typeof item !== "object") return { item, changed: false };
   let changed = false;
   Object.keys(item).forEach((key) => {
-    if (key === "createdAt" || key === "color" || key === "isFunc" || key === "action" || key === "id") return;
+    if (key === "createdAt" || key === "color" || key === "isFunc" || key === "action" || key === "id" || key === "once" || key === "type") return;
     const value = item[key];
     if (typeof value === "string" && value.includes(from)) {
       item[key] = value.split(from).join(to);
       changed = true;
+    } else if (value && typeof value === "object") {
+      const result = replaceStringsInRuleItem(value, from, to);
+      if (result.changed) changed = true;
     }
   });
   return { item, changed };
@@ -5520,6 +5841,32 @@ function forceSelectValue(select, value) {
   return true;
 }
 
+function forceSetInputValue(el, value) {
+  if (!el || (typeof isAdblockUiNode === 'function' && isAdblockUiNode(el))) return false;
+  const tag = el.tagName ? String(el.tagName).toUpperCase() : '';
+  if (tag !== 'INPUT' && tag !== 'TEXTAREA') return false;
+  const next = value == null ? '' : String(value);
+
+  let proto = null;
+  try {
+    if (tag === 'TEXTAREA' && typeof HTMLTextAreaElement !== 'undefined') proto = HTMLTextAreaElement.prototype;
+    else if (typeof HTMLInputElement !== 'undefined') proto = HTMLInputElement.prototype;
+  } catch (e) {}
+
+  const tracker = el._valueTracker;
+  if (tracker && typeof tracker.setValue === 'function') {
+    try { tracker.setValue(next === '' ? 'adblock-prev' : ''); } catch (e) {}
+  }
+
+  const desc = proto ? Object.getOwnPropertyDescriptor(proto, 'value') : null;
+  if (desc && typeof desc.set === 'function') desc.set.call(el, next);
+  else el.value = next;
+
+  try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+  try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+  return true;
+}
+
 let selectValueObserver = null;
 let activeSelectValueRules = [];
 
@@ -5554,6 +5901,507 @@ function applySelectValueRules(list) {
     }
   };
   start();
+}
+
+const ACTION_INTERVAL_MIN_MS = 500;
+let actionEngineSerial = 0;
+let actionRuntime = null;
+let activeActionMenuIds = [];
+const actionMenuHandlers = new Map();
+
+function hashString(value) {
+  const str = String(value || '');
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash) ^ str.charCodeAt(i);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function actionRuleKey(item) {
+  if (!item || typeof item !== 'object') return '';
+  let when = '';
+  let action = '';
+  try { when = JSON.stringify(item.when || null); } catch (e) { when = ''; }
+  try { action = JSON.stringify(item.do || null); } catch (e) { action = ''; }
+  return [item.name || '', when, action, item.once ? '1' : '0'].join('\n');
+}
+
+function deduplicateActionList(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const result = [];
+  list.forEach((item) => {
+    if (!item || typeof item !== 'object' || (!item.when && !item.do)) return;
+    const key = actionRuleKey(item);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    result.push(item);
+  });
+  return result;
+}
+
+function describeActionRule(item) {
+  if (!item || typeof item !== 'object') return '동작';
+  const when = item.when && typeof item.when === 'object' ? item.when : {};
+  const whenType = when.type ? String(when.type) : 'action';
+  let detail = when.selector || when.key || when.keys || '';
+  if (Array.isArray(detail)) detail = detail.join(',');
+  if (!detail && whenType === 'load' && when.delay != null) detail = String(when.delay) + 'ms';
+  if (!detail && whenType === 'interval') {
+    const ms = when.interval != null ? when.interval : (when.ms != null ? when.ms : when.delay);
+    if (ms != null) detail = String(ms) + 'ms';
+  }
+  const doPart = Array.isArray(item.do)
+    ? ('steps×' + item.do.length)
+    : (item.do && item.do.type ? String(item.do.type) : 'do');
+  const name = item.name ? String(item.name) + ' — ' : '';
+  return name + whenType + (detail ? '(' + detail + ')' : '') + ' → ' + doPart;
+}
+
+function actionIntervalMs(when) {
+  const raw = when ? (when.interval != null ? when.interval : (when.ms != null ? when.ms : when.delay)) : null;
+  const n = Number(raw);
+  if (!isFinite(n) || n <= 0) return 1000;
+  if (n < ACTION_INTERVAL_MIN_MS) {
+    console.warn('[Dynamic Ad Blocker] interval ' + n + 'ms is below ' + ACTION_INTERVAL_MIN_MS + 'ms; using ' + ACTION_INTERVAL_MIN_MS + 'ms.');
+    return ACTION_INTERVAL_MIN_MS;
+  }
+  return n;
+}
+
+function queryActionElements(selector) {
+  if (!selector || typeof selector !== 'string') return [];
+  const norm = typeof normalizeWildcardSelector === 'function' ? normalizeWildcardSelector(selector.trim()) : selector.trim();
+  try {
+    return querySelectorAllExtended(norm) || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function sandboxWjlApi() {
+  const api = {};
+  function put(name, fn) {
+    if (typeof fn === 'function') api[name] = fn;
+  }
+  put('cssToObject', typeof cssToObject === 'function' ? cssToObject : null);
+  put('objectToCss', typeof objectToCss === 'function' ? objectToCss : null);
+  put('queryStringToObject', typeof queryStringToObject === 'function' ? queryStringToObject : null);
+  put('objectToQueryString', typeof objectToQueryString === 'function' ? objectToQueryString : null);
+  put('waitFor', typeof waitFor === 'function' ? waitFor : null);
+  put('waitForSeconds', typeof waitForSeconds === 'function' ? waitForSeconds : null);
+  put('waitForSelector', typeof waitForSelector === 'function' ? waitForSelector : null);
+  put('findElement', typeof findElement === 'function' ? findElement : null);
+  put('findElements', typeof findElements === 'function' ? findElements : null);
+  put('findElementByTextContent', typeof findElementByTextContent === 'function' ? findElementByTextContent : null);
+  put('findElementsByTextContent', typeof findElementsByTextContent === 'function' ? findElementsByTextContent : null);
+  put('findElementByProperty', typeof findElementByProperty === 'function' ? findElementByProperty : null);
+  put('findElementsByProperty', typeof findElementsByProperty === 'function' ? findElementsByProperty : null);
+  put('triggerToElement', typeof triggerToElement === 'function' ? triggerToElement : null);
+  put('clickToElement', typeof clickToElement === 'function' ? clickToElement : null);
+  put('useKeyPress', typeof useKeyPress === 'function' ? useKeyPress : null);
+  put('useKeysPress', typeof useKeysPress === 'function' ? useKeysPress : null);
+  put('useGetKeyPress', typeof useGetKeyPress === 'function' ? useGetKeyPress : null);
+  put('useGetKeysPress', typeof useGetKeysPress === 'function' ? useGetKeysPress : null);
+  put('bindUniversalButton', typeof bindUniversalButton === 'function' ? bindUniversalButton : null);
+  put('bindUniversalButtonAsync', typeof bindUniversalButtonAsync === 'function' ? bindUniversalButtonAsync : null);
+  if (typeof Toast !== 'undefined' && Toast) api.Toast = Toast;
+  if (typeof useDownload !== 'undefined' && useDownload) api.useDownload = useDownload;
+  const registry = readBinderRegistry();
+  if (registry) api.bound = registry;
+  return api;
+}
+
+function resolveWjlFunction(path) {
+  const parts = String(path || '').split('.').map((part) => part.trim()).filter(Boolean);
+  if (parts.length === 0) return null;
+  const api = sandboxWjlApi();
+  let cursor = Object.prototype.hasOwnProperty.call(api, parts[0]) ? api[parts[0]] : undefined;
+  if (cursor == null) {
+    try { cursor = window[parts[0]]; } catch (e) { cursor = null; }
+  }
+  for (let i = 1; i < parts.length && cursor != null; i++) cursor = cursor[parts[i]];
+  return typeof cursor === 'function' ? cursor : null;
+}
+
+function actionElements(action, ctx) {
+  const selector = action && action.selector ? String(action.selector) : '';
+  const ctxSelector = ctx && ctx.selector ? String(ctx.selector) : '';
+  if (ctx && ctx.el && (!selector || selector === ctxSelector)) return [ctx.el];
+  if (selector) return queryActionElements(selector);
+  if (ctx && ctx.el) return [ctx.el];
+  if (ctxSelector) return queryActionElements(ctxSelector);
+  return [];
+}
+
+function compileActionCode(code) {
+  const source = String(code || '');
+  const params = ['el', 'targetElement', 'e', 'event', 'WJL', 'wjl'];
+  try {
+    return new Function(...params, source);
+  } catch (err) {
+    if (!/\bawait\b/.test(source)) throw err;
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    return new AsyncFunction(...params, source);
+  }
+}
+
+function actionRetriesUntilReady(action) {
+  if (!action) return false;
+  if (Array.isArray(action)) return action.some(actionRetriesUntilReady);
+  const type = action.type ? String(action.type) : '';
+  return type === 'select' || type === 'setValue';
+}
+
+// Gist의 code 액션은 유저스크립트 권한으로 실행된다. 토큰이 있는 Gist는 비공개로 둔다.
+async function runAction(action, ctx) {
+  if (action == null) return false;
+  if (Array.isArray(action)) {
+    let ok = true;
+    for (let i = 0; i < action.length; i++) {
+      const stepOk = await runAction(action[i], ctx || {});
+      if (stepOk === false) ok = false;
+    }
+    return ok;
+  }
+  if (typeof action !== 'object') return false;
+
+  const type = action.type
+    ? String(action.type)
+    : (action.code ? 'code' : (action.fn ? 'wjl' : 'click'));
+  const context = ctx || {};
+
+  if (type === 'click') {
+    const nodes = actionElements(action, context).filter((el) => el && !(typeof isAdblockUiNode === 'function' && isAdblockUiNode(el)));
+    if (nodes.length === 0) return false;
+    nodes.forEach((el) => {
+      try { if (typeof el.click === 'function') el.click(); } catch (e) {}
+    });
+    return true;
+  }
+
+  if (type === 'select') {
+    const nodes = actionElements(action, context);
+    let ok = false;
+    nodes.forEach((el) => {
+      if (!el || (typeof isAdblockUiNode === 'function' && isAdblockUiNode(el))) return;
+      if (forceSelectValue(el, action.value)) ok = true;
+    });
+    return ok;
+  }
+
+  if (type === 'setValue') {
+    const nodes = actionElements(action, context);
+    let ok = false;
+    nodes.forEach((el) => {
+      if (forceSetInputValue(el, action.value)) ok = true;
+    });
+    return ok;
+  }
+
+  if (type === 'wjl') {
+    const fn = resolveWjlFunction(action.fn || action.name);
+    if (typeof fn !== 'function') {
+      console.warn('[Dynamic Ad Blocker] WJL function not found:', action.fn || action.name);
+      return false;
+    }
+    const args = Array.isArray(action.args) ? action.args : (action.args == null ? [] : [action.args]);
+    await fn.apply(undefined, args);
+    return true;
+  }
+
+  if (type === 'code') {
+    if (!action.code) return false;
+    const fn = compileActionCode(action.code);
+    const el = context.el || null;
+    const event = context.event || context.e || null;
+    const api = sandboxWjlApi();
+    const result = fn(el, el, event, event, api, api);
+    if (result && typeof result.then === 'function') await result;
+    return true;
+  }
+
+  console.warn('[Dynamic Ad Blocker] Unknown action type:', type);
+  return false;
+}
+
+function runShortcutAction(sc, event, targetVal) {
+  let el = null;
+  try {
+    const found = targetVal ? querySelectorAllExtended(targetVal) : [];
+    el = found.length > 0 ? found[0] : null;
+    if (!el && targetVal) {
+      try { el = document.querySelector(targetVal); } catch (e) {}
+    }
+  } catch (e) {}
+  if (sc && (sc.isFunc || sc.code)) {
+    return runAction({ type: 'code', code: sc.code || '' }, { el: el, event: event, selector: targetVal || '' });
+  }
+  return runAction({ type: 'click' }, { el: el, event: event });
+}
+
+function syncActionMenus(entries) {
+  const next = Array.isArray(entries) ? entries : [];
+  const nextIds = new Set();
+  next.forEach((entry) => {
+    if (!entry || !entry.id || typeof registerMenuCommand !== 'function') return;
+    nextIds.add(entry.id);
+    actionMenuHandlers.set(entry.id, entry.callback);
+    registerMenuCommand(entry.id, entry.caption, function actionMenuClick() {
+      const fn = actionMenuHandlers.get(entry.id);
+      if (typeof fn === 'function') fn();
+    }, entry.autoClose !== false);
+  });
+  activeActionMenuIds.forEach((id) => {
+    if (nextIds.has(id)) return;
+    actionMenuHandlers.delete(id);
+    if (typeof unregisterMenuCommand === 'function') unregisterMenuCommand(id);
+  });
+  activeActionMenuIds = Array.from(nextIds);
+}
+
+function ensureUrlChangeHook() {
+  if (window.__adblockHistoryHooked) return;
+  window.__adblockHistoryHooked = true;
+  if (!Array.isArray(window.__adblockUrlChangeListeners)) window.__adblockUrlChangeListeners = [];
+  const notify = () => {
+    const list = window.__adblockUrlChangeListeners || [];
+    for (let i = 0; i < list.length; i++) {
+      try { list[i](String(location.href)); } catch (e) {}
+    }
+  };
+  ['pushState', 'replaceState'].forEach((name) => {
+    const orig = history && history[name];
+    if (typeof orig !== 'function' || !history) return;
+    history[name] = function () {
+      const result = orig.apply(this, arguments);
+      notify();
+      return result;
+    };
+  });
+  window.addEventListener('popstate', notify);
+  window.addEventListener('hashchange', notify);
+}
+
+function collectMatchedActionRules(activeRules) {
+  const currentHost = (window.location && (window.location.host || window.location.hostname)) || '';
+  const matched = [];
+  (activeRules || []).forEach((rule) => {
+    if (!rule || !rule.host || !Array.isArray(rule.actionList)) return;
+    const ruleHost = String(rule.host).replace(/^https?:\/\//, '').replace(/\/$/, '');
+    if (typeof isMatch === 'function' && isMatch(ruleHost, currentHost)) matched.push.apply(matched, rule.actionList);
+  });
+  return deduplicateActionList(matched);
+}
+
+function stopActionEngine() {
+  const current = actionRuntime;
+  actionRuntime = null;
+  if (current && current.cleanups) {
+    current.cleanups.forEach((fn) => { try { fn(); } catch (e) {} });
+  }
+}
+
+function startActionEngine(activeRules, bindKey) {
+  stopActionEngine();
+  const rules = collectMatchedActionRules(activeRules);
+  const runtime = {
+    id: ++actionEngineSerial,
+    cleanups: [],
+    fired: new Set(),
+    seen: new Map(),
+    alive: true
+  };
+  actionRuntime = runtime;
+  if (rules.length === 0) {
+    if (window.top === window.self) syncActionMenus([]);
+    return;
+  }
+
+  const isAlive = () => actionRuntime && actionRuntime.id === runtime.id;
+  const menuEntries = [];
+  const appearRules = [];
+
+  const runRule = (rule, ruleKey, extraCtx) => {
+    if (!isAlive() || runtime.fired.has(ruleKey)) return Promise.resolve(false);
+    const retryLater = actionRetriesUntilReady(rule.do);
+    if (rule.once && !retryLater) runtime.fired.add(ruleKey);
+    return Promise.resolve(runAction(rule.do, Object.assign({ rule: rule }, extraCtx || {}))).then((ok) => {
+      if (isAlive() && rule.once && ok !== false) runtime.fired.add(ruleKey);
+      return ok;
+    }).catch((err) => {
+      console.error('[Dynamic Ad Blocker] action error:', rule && rule.name ? rule.name : ruleKey, err);
+      return false;
+    });
+  };
+
+  rules.forEach((rule) => {
+    if (!rule || !rule.do) return;
+    const when = rule.when && typeof rule.when === 'object' ? rule.when : {};
+    const type = String(when.type || '').toLowerCase();
+    const ruleKey = actionRuleKey(rule) || ('action-' + hashString(describeActionRule(rule)));
+
+    if (type === 'load') {
+      const delay = Math.max(0, Number(when.delay) || 0);
+      let timer = null;
+      const fire = () => {
+        if (!isAlive()) return;
+        timer = setTimeout(() => { runRule(rule, ruleKey, {}); }, delay);
+      };
+      if (document.readyState === 'complete') fire();
+      else {
+        const onLoad = () => fire();
+        window.addEventListener('load', onLoad);
+        runtime.cleanups.push(() => window.removeEventListener('load', onLoad));
+      }
+      runtime.cleanups.push(() => { if (timer) clearTimeout(timer); });
+      return;
+    }
+
+    if (type === 'appear') {
+      if (!when.selector) {
+        console.warn('[Dynamic Ad Blocker] appear action missing selector:', rule.name || ruleKey);
+        return;
+      }
+      appearRules.push({ rule: rule, ruleKey: ruleKey });
+      return;
+    }
+
+    if (type === 'urlchange') {
+      ensureUrlChangeHook();
+      const onUrl = () => { runRule(rule, ruleKey, { url: String(location.href) }); };
+      if (!Array.isArray(window.__adblockUrlChangeListeners)) window.__adblockUrlChangeListeners = [];
+      window.__adblockUrlChangeListeners.push(onUrl);
+      runtime.cleanups.push(() => {
+        window.__adblockUrlChangeListeners = (window.__adblockUrlChangeListeners || []).filter((fn) => fn !== onUrl);
+      });
+      return;
+    }
+
+    if (type === 'interval') {
+      const ms = actionIntervalMs(when);
+      let timer = null;
+      let running = false;
+      const stop = () => { if (timer) clearTimeout(timer); timer = null; };
+      const schedule = () => {
+        stop();
+        if (!isAlive() || runtime.fired.has(ruleKey)) return;
+        timer = setTimeout(tick, ms);
+      };
+      const tick = () => {
+        if (!isAlive() || runtime.fired.has(ruleKey) || running) {
+          if (!running) schedule();
+          return;
+        }
+        running = true;
+        runRule(rule, ruleKey, {}).then(() => {
+          running = false;
+          schedule();
+        });
+      };
+      runtime.cleanups.push(stop);
+      schedule();
+      return;
+    }
+
+    if (type === 'menu') {
+      if (window.top !== window.self) return;
+      const caption = rule.name ? String(rule.name) : describeActionRule(rule);
+      menuEntries.push({
+        id: 'adblock-action-' + hashString(ruleKey),
+        caption: caption,
+        autoClose: true,
+        callback: () => { runRule(rule, ruleKey, {}); }
+      });
+      return;
+    }
+
+    if (type === 'key') {
+      const spec = when.key || when.keys;
+      if (!spec || typeof bindKey !== 'function') {
+        if (!spec) console.warn('[Dynamic Ad Blocker] key action missing key:', rule.name || ruleKey);
+        return;
+      }
+      const unbind = bindKey(spec, (event) => {
+        if (event) {
+          try {
+            if (event.__adblockActionRan) return;
+            event.__adblockActionRan = true;
+          } catch (e) {}
+        }
+        runRule(rule, ruleKey, { event: event, selector: when.selector || '' });
+      });
+      if (typeof unbind === 'function') runtime.cleanups.push(unbind);
+      return;
+    }
+
+    if (type) console.warn('[Dynamic Ad Blocker] Unknown action trigger:', type);
+  });
+
+  if (appearRules.length > 0) {
+    const scanAppear = () => {
+      if (!isAlive()) return;
+      appearRules.forEach((entry) => {
+        if (runtime.fired.has(entry.ruleKey)) return;
+        const selector = entry.rule.when.selector;
+        let nodes = [];
+        try { nodes = queryActionElements(selector); } catch (e) { nodes = []; }
+        let state = runtime.seen.get(entry.ruleKey);
+        if (!state) {
+          state = new WeakMap();
+          runtime.seen.set(entry.ruleKey, state);
+        }
+        nodes.forEach((el) => {
+          if (runtime.fired.has(entry.ruleKey)) return;
+          if (!el || (typeof isAdblockUiNode === 'function' && isAdblockUiNode(el))) return;
+          if (state.get(el) === 'done' || state.get(el) === 'run') return;
+          state.set(el, 'run');
+          runRule(entry.rule, entry.ruleKey, { el: el, selector: selector }).then((ok) => {
+            if (!isAlive()) return;
+            if (ok === false && actionRetriesUntilReady(entry.rule.do)) state.delete(el);
+            else state.set(el, 'done');
+          });
+        });
+      });
+    };
+    let scheduled = false;
+    const scheduleScan = () => {
+      if (scheduled || !isAlive()) return;
+      scheduled = true;
+      const flush = () => {
+        scheduled = false;
+        scanAppear();
+      };
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(flush);
+      else setTimeout(flush, 16);
+    };
+    scanAppear();
+    let observer = null;
+    try {
+      observer = new MutationObserver(() => scheduleScan());
+    } catch (e) {}
+    const start = () => {
+      if (!observer || !isAlive()) return;
+      const target = document.body || document.documentElement;
+      if (target) observer.observe(target, { childList: true, subtree: true });
+      else setTimeout(start, 50);
+    };
+    start();
+    runtime.cleanups.push(() => { if (observer) observer.disconnect(); });
+
+    ensureUrlChangeHook();
+    const rescan = () => scheduleScan();
+    if (!Array.isArray(window.__adblockUrlChangeListeners)) window.__adblockUrlChangeListeners = [];
+    window.__adblockUrlChangeListeners.push(rescan);
+    runtime.cleanups.push(() => {
+      window.__adblockUrlChangeListeners = (window.__adblockUrlChangeListeners || []).filter((fn) => fn !== rescan);
+    });
+  }
+
+  if (window.top === window.self) syncActionMenus(menuEntries);
+
+  console.log('[Dynamic Ad Blocker] actionList ' + rules.length + '개 적용 (appear ' + appearRules.length + ', menu ' + menuEntries.length + ')');
 }
 
 function showSelectValueDialog(selectEl, onConfirm) {
@@ -6706,6 +7554,7 @@ function deduplicateShortcutList(list) {
         r.displayNoneSelectorList = deduplicateRuleList(r.displayNoneSelectorList);
         r.customStyleList = deduplicateRuleList(r.customStyleList);
         r.shortcuts = deduplicateShortcutList(r.shortcuts);
+        r.actionList = deduplicateActionList(r.actionList);
         ruleMap.set(r.host, r);
       }
     });
@@ -6716,6 +7565,7 @@ function deduplicateShortcutList(list) {
       const currentBlurState = isImageBlurEnabled();
       applyImageBlurStyle(currentBlurState);
       updateImageBlurButtonUI(currentBlurState);
+      if (typeof refreshAdblockMenuCommands === 'function') refreshAdblockMenuCommands();
     } catch (e) {}
   } else {
     // Gist 로드 실패 시 또는 미설정 시 기존 로컬 캐시 활용
@@ -6727,6 +7577,7 @@ function deduplicateShortcutList(list) {
         r.displayNoneSelectorList = deduplicateRuleList(r.displayNoneSelectorList);
         r.customStyleList = deduplicateRuleList(r.customStyleList);
         r.shortcuts = deduplicateShortcutList(r.shortcuts);
+        r.actionList = deduplicateActionList(r.actionList);
         ruleMap.set(r.host, r);
       }
     });
@@ -6849,9 +7700,9 @@ function deduplicateShortcutList(list) {
     });
 
     const cleanShortcuts = deduplicateShortcutList(matchedShortcuts);
-    if (cleanShortcuts.length === 0) return;
-
-    console.log(`[Dynamic Ad Blocker] 매칭된 단축키 ${cleanShortcuts.length}개 바인딩 완료:`, cleanShortcuts);
+    if (cleanShortcuts.length > 0) {
+      console.log(`[Dynamic Ad Blocker] 매칭된 단축키 ${cleanShortcuts.length}개 바인딩 완료:`, cleanShortcuts);
+    }
 
     cleanShortcuts.forEach(sc => {
       if (!sc) return;
@@ -6872,17 +7723,14 @@ function deduplicateShortcutList(list) {
         }
 
         try {
-          const found = targetVal ? querySelectorAllExtended(targetVal) : [];
-          const el = found.length > 0 ? found[0] : (targetVal ? document.querySelector(targetVal) : null);
-
           if (sc.isFunc || sc.code) {
             console.log(`[Dynamic Ad Blocker] 단축키 JS/JSX 코드 실행 ('${keyVal}'):`, sc.code);
-            const fn = new Function('el', 'targetElement', 'e', 'event', sc.code);
-            fn(el, el, e, e);
-          } else if (el) {
-            console.log(`[Dynamic Ad Blocker] 단축키 트리거 ('${keyVal}') -> 클릭:`, targetVal, el);
-            el.click();
+          } else {
+            console.log(`[Dynamic Ad Blocker] 단축키 트리거 ('${keyVal}') -> 클릭:`, targetVal);
           }
+          Promise.resolve(runShortcutAction(sc, e, targetVal)).catch((err) => {
+            console.error(`[Dynamic Ad Blocker] 단축키 실행 에러:`, err);
+          });
         } catch (err) {
           console.error(`[Dynamic Ad Blocker] 단축키 실행 에러:`, err);
         }
@@ -6954,21 +7802,14 @@ function deduplicateShortcutList(list) {
         if (!isMatched) return;
 
         try {
-          const found = targetVal ? querySelectorAllExtended(targetVal) : [];
-          const el = found.length > 0 ? found[0] : (targetVal ? document.querySelector(targetVal) : null);
-
           if (sc.isFunc || sc.code) {
             console.log(`[Dynamic Ad Blocker] keydown JS/JSX 코드 실행 ('${e.key}'):`, sc.code);
-            e.preventDefault();
-            e.stopPropagation();
-            const fn = new Function('el', 'targetElement', 'e', 'event', sc.code);
-            fn(el, el, e, e);
-          } else if (el) {
-            console.log(`[Dynamic Ad Blocker] keydown 트리거 ('${e.key}') -> 클릭:`, targetVal, el);
-            e.preventDefault();
-            e.stopPropagation();
-            el.click();
+          } else {
+            console.log(`[Dynamic Ad Blocker] keydown 트리거 ('${e.key}') -> 클릭:`, targetVal);
           }
+          e.preventDefault();
+          e.stopPropagation();
+          Promise.resolve(runShortcutAction(sc, e, targetVal)).catch(() => {});
         } catch (err) {}
       };
 
@@ -6977,6 +7818,78 @@ function deduplicateShortcutList(list) {
         window.removeEventListener('keydown', directKeyHandler, true);
       });
     });
+
+    startActionEngine(activeRules, bindShortcutKeys);
+  }
+
+  function bindShortcutKeys(keyVal, handler) {
+    const expandedItems = parseAndExpandShortcutKeys(keyVal);
+    const cleanups = [];
+    if (!keyVal || expandedItems.length === 0 || typeof handler !== 'function') {
+      return function () {};
+    }
+
+    const isTypingTarget = () => {
+      const activeEl = document.activeElement;
+      if (!activeEl) return false;
+      const tag = activeEl.tagName ? activeEl.tagName.toUpperCase() : '';
+      return tag === 'INPUT' || tag === 'TEXTAREA' || !!activeEl.isContentEditable;
+    };
+
+    expandedItems.forEach((item) => {
+      const invoke = (e) => {
+        if (isTypingTarget()) return;
+        handler(e);
+      };
+      if (!item.isCombo) {
+        if (typeof useKeyPress === 'function') {
+          const unbind = useKeyPress(item.keys[0], invoke);
+          if (typeof unbind === 'function') cleanups.push(unbind);
+        }
+      } else {
+        const normalizedKeys = item.keys.map((k) => {
+          const lk = k.toLowerCase();
+          if (lk === 'ctrl' || lk === 'control') return 'Control';
+          if (lk === 'shift') return 'Shift';
+          if (lk === 'alt') return 'Alt';
+          if (lk === 'meta' || lk === 'cmd') return 'Meta';
+          return k;
+        });
+        if (typeof useKeysPress === 'function') {
+          const unbind = useKeysPress(normalizedKeys, invoke);
+          if (typeof unbind === 'function') cleanups.push(unbind);
+        } else if (typeof useKeyPress === 'function') {
+          const unbind = useKeyPress(item.keys[item.keys.length - 1], invoke);
+          if (typeof unbind === 'function') cleanups.push(unbind);
+        }
+      }
+    });
+
+    const directKeyHandler = (e) => {
+      if (!e || !e.key || isTypingTarget()) return;
+      const isMatched = expandedItems.some((item) => {
+        const targetKey = item.keys[item.keys.length - 1].toLowerCase();
+        const currentKey = String(e.key).toLowerCase();
+        if (targetKey !== currentKey) return false;
+        if (!item.isCombo) return !e.ctrlKey && !e.altKey && !e.metaKey;
+        const mods = item.keys.slice(0, -1).map((m) => m.toLowerCase());
+        const needCtrl = mods.includes('ctrl') || mods.includes('control');
+        const needShift = mods.includes('shift');
+        const needAlt = mods.includes('alt');
+        const needMeta = mods.includes('meta') || mods.includes('cmd');
+        return (needCtrl === !!e.ctrlKey) && (needShift === !!e.shiftKey) && (needAlt === !!e.altKey) && (needMeta === !!e.metaKey);
+      });
+      if (!isMatched) return;
+      e.preventDefault();
+      e.stopPropagation();
+      handler(e);
+    };
+    window.addEventListener('keydown', directKeyHandler, true);
+    cleanups.push(() => window.removeEventListener('keydown', directKeyHandler, true));
+
+    return function cleanupShortcutKeys() {
+      cleanups.forEach((fn) => { try { fn(); } catch (err) {} });
+    };
   }
 
   initSiteShortcuts(rulesArray);
@@ -6988,13 +7901,14 @@ function deduplicateShortcutList(list) {
     console.log(`[AdBlocker Debug] checkAndApply 실행 - 현재창 Host: "${currentHost}" (URL: ${window.location.href})`);
     console.log(`[AdBlocker Debug] 전체 등록된 규칙 개수: ${activeRules.length}`);
     activeRules.forEach((r, idx) => {
-      console.log(`[AdBlocker Debug] 룰 #${idx + 1} - Host: "${r.host}" (덮기: ${(r.selectorList || []).length}, 제거: ${(r.displayNoneSelectorList || []).length}, 단축키: ${(r.shortcuts || []).length})`);
+      console.log(`[AdBlocker Debug] 룰 #${idx + 1} - Host: "${r.host}" (덮기: ${(r.selectorList || []).length}, 제거: ${(r.displayNoneSelectorList || []).length}, 단축키: ${(r.shortcuts || []).length}, 동작: ${(r.actionList || []).length})`);
     });
 
     let combinedCover = [];
     let combinedHide = [];
     let combinedStyle = [];
     let combinedSelectValues = [];
+    let combinedActions = 0;
 
     for (const rule of activeRules) {
       const ruleHost = rule.host.replace(/^https?:\/\//, "").replace(/\/$/, "");
@@ -7005,6 +7919,7 @@ function deduplicateShortcutList(list) {
         if (rule.displayNoneSelectorList) combinedHide.push(...rule.displayNoneSelectorList);
         if (rule.customStyleList) combinedStyle.push(...rule.customStyleList);
         if (rule.selectValueList) combinedSelectValues.push(...rule.selectValueList);
+        if (Array.isArray(rule.actionList)) combinedActions += rule.actionList.length;
       }
     }
 
@@ -7012,7 +7927,7 @@ function deduplicateShortcutList(list) {
 
     if (matched) {
       console.log(
-        `[AdBlocker Debug] 매칭 성공! 최종 적용 셀렉터 -> (덮기: ${combinedCover.length}, 제거: ${combinedHide.length}, 스타일: ${combinedStyle.length}, 값선택: ${combinedSelectValues.length})`,
+        `[AdBlocker Debug] 매칭 성공! 최종 적용 셀렉터 -> (덮기: ${combinedCover.length}, 제거: ${combinedHide.length}, 스타일: ${combinedStyle.length}, 값선택: ${combinedSelectValues.length}, 동작: ${combinedActions})`,
       );
       applyAdblockRules(combinedCover, combinedHide, combinedStyle);
     } else if (adblockStyleElement) {
@@ -7399,7 +8314,7 @@ function handleShortcutPickerClick() {
   startElementPicker((sel, el) => handleShortcutAdd(sel, el), { theme: 'purple' });
 }
 
-function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles = [], urlPatterns = [], shortcuts = [], selectValues = [], onConfirm, onReplace }) {
+function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles = [], urlPatterns = [], shortcuts = [], selectValues = [], actions = [], onConfirm, onReplace }) {
   if (!document.getElementById('adblock-modal-style')) {
     const style = document.createElement('style');
     style.id = 'adblock-modal-style';
@@ -7766,6 +8681,7 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
   createSection('값 선택 (Select)', selectValues, 'selectValue');
   createSection('차단 광고 링크 (URL Pattern)', urlPatterns, 'url');
   createSection('단축키 규칙 (Shortcuts)', shortcuts, 'shortcut');
+  createSection('동작 규칙 (actionList)', actions, 'action');
 
   numInput.addEventListener('input', () => {
     const text = numInput.value.trim();
@@ -8077,8 +8993,9 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
     const selectValues = deduplicateRuleList(currentPageRules.selectValueList || []);
     const urlPatterns = deduplicateRuleList(currentPageRules.blockedUrlPatterns || []);
     const shortcuts = deduplicateShortcutList(currentPageRules.shortcuts || []);
+    const actions = deduplicateActionList(currentPageRules.actionList || []);
 
-    if (coverSelectors.length === 0 && hideSelectors.length === 0 && customStyles.length === 0 && selectValues.length === 0 && urlPatterns.length === 0 && shortcuts.length === 0) {
+    if (coverSelectors.length === 0 && hideSelectors.length === 0 && customStyles.length === 0 && selectValues.length === 0 && urlPatterns.length === 0 && shortcuts.length === 0 && actions.length === 0) {
       Toast.show('이 사이트에 등록된 설정 항목이 없습니다.');
       return;
     }
@@ -8090,6 +9007,7 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
       urlPatterns,
       shortcuts,
       selectValues,
+      actions,
       onReplace: ({ targets, from, to }) => {
         const lists = {
           cover: coverSelectors,
@@ -8097,7 +9015,8 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
           custom: customStyles,
           selectValue: selectValues,
           url: urlPatterns,
-          shortcut: shortcuts
+          shortcut: shortcuts,
+          action: actions
         };
         const togglePairs = [];
         let changedCount = 0;
@@ -8127,6 +9046,7 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
         currentPageRules.selectValueList = deduplicateRuleList(selectValues);
         currentPageRules.blockedUrlPatterns = deduplicateRuleList(urlPatterns);
         currentPageRules.shortcuts = deduplicateShortcutList(shortcuts);
+        currentPageRules.actionList = deduplicateActionList(actions);
 
         const toggleSave = renameToggleRuleSelectors(togglePairs);
         Toast.show(`${changedCount}개 항목에서 문자열을 바꿨습니다. 적용을 위해 새로고침합니다.`);
@@ -8165,6 +9085,7 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
         const urlsToDelete = [];
         const shortcutsToDelete = [];
         const selectValuesToDelete = [];
+        const actionsToDelete = [];
 
         const removedToggleRules = [];
         selectedItems.forEach(item => {
@@ -8174,6 +9095,7 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
           else if (item.type === 'url') urlsToDelete.push(item.index);
           else if (item.type === 'shortcut') shortcutsToDelete.push(item.index);
           else if (item.type === 'selectValue') selectValuesToDelete.push(item.index);
+          else if (item.type === 'action') actionsToDelete.push(item.index);
 
           const list = item.type === 'cover' ? coverSelectors : item.type === 'hide' ? hideSelectors : item.type === 'custom' ? customStyles : null;
           if (!list) return;
@@ -8188,6 +9110,7 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
         urlsToDelete.sort((a, b) => b - a);
         shortcutsToDelete.sort((a, b) => b - a);
         selectValuesToDelete.sort((a, b) => b - a);
+        actionsToDelete.sort((a, b) => b - a);
 
         coverToDelete.forEach(idx => {
           currentPageRules.selectorList.splice(idx, 1);
@@ -8218,6 +9141,11 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
             currentPageRules.selectValueList.splice(idx, 1);
           }
         });
+
+        actionsToDelete.forEach(idx => {
+          actions.splice(idx, 1);
+        });
+        currentPageRules.actionList = actions;
 
         Toast.show('선택한 차단/단축키 항목이 삭제되었습니다. 적용을 위해 새로고침합니다.');
 
@@ -8348,6 +9276,7 @@ function showDeleteModal({ coverSelectors = [], hideSelectors = [], customStyles
         Toast.show("플로팅 버튼을 띄웠습니다.");
       }
     }
+    if (typeof refreshAdblockMenuCommands === 'function') refreshAdblockMenuCommands();
   };
 
   setTimeout(ensureFloatingButtonExists, 3000);
