@@ -7898,12 +7898,6 @@ function deduplicateShortcutList(list) {
     const activeRules = propsRulesArray || rulesArray;
     let matched = false;
 
-    console.log(`[AdBlocker Debug] checkAndApply 실행 - 현재창 Host: "${currentHost}" (URL: ${window.location.href})`);
-    console.log(`[AdBlocker Debug] 전체 등록된 규칙 개수: ${activeRules.length}`);
-    activeRules.forEach((r, idx) => {
-      console.log(`[AdBlocker Debug] 룰 #${idx + 1} - Host: "${r.host}" (덮기: ${(r.selectorList || []).length}, 제거: ${(r.displayNoneSelectorList || []).length}, 단축키: ${(r.shortcuts || []).length}, 동작: ${(r.actionList || []).length})`);
-    });
-
     let combinedCover = [];
     let combinedHide = [];
     let combinedStyle = [];
@@ -7926,12 +7920,8 @@ function deduplicateShortcutList(list) {
     initSiteShortcuts(activeRules);
 
     if (matched) {
-      console.log(
-        `[AdBlocker Debug] 매칭 성공! 최종 적용 셀렉터 -> (덮기: ${combinedCover.length}, 제거: ${combinedHide.length}, 스타일: ${combinedStyle.length}, 값선택: ${combinedSelectValues.length}, 동작: ${combinedActions})`,
-      );
       applyAdblockRules(combinedCover, combinedHide, combinedStyle);
     } else if (adblockStyleElement) {
-      console.log(`[AdBlocker Debug] 매칭된 규칙 없음. 기존 주입 스타일 초기화.`);
       applyAdblockRules([], []);
     }
     applySelectValueRules(combinedSelectValues);
